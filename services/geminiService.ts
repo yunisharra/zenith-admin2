@@ -9,6 +9,7 @@ interface BotContext {
   aliases: BotAlias[];
 }
 
+// FUNGSI 1: Untuk Streaming (Mengetik Kata demi Kata)
 export const processBotLogicStream = async (
   userMessage: string, 
   context: BotContext, 
@@ -20,7 +21,7 @@ export const processBotLogicStream = async (
     
     if (!apiKey || apiKey === "" || apiKey === "undefined") {
       onChunk("⚠️ API_KEY tidak terdeteksi. Pastikan variabel bernama API_KEY sudah diisi di Vercel dan sudah melakukan REDEPLOY.");
-      return;
+      return "";
     }
 
     const ai = new GoogleGenAI({ apiKey });
@@ -53,7 +54,7 @@ export const processBotLogicStream = async (
       contents: userMessage,
       config: {
         systemInstruction,
-        thinkingConfig: { thinkingBudget: 0 }, // Matikan thinking agar respon instan
+        thinkingConfig: { thinkingBudget: 0 },
         temperature: 0.5,
       },
     });
@@ -73,4 +74,11 @@ export const processBotLogicStream = async (
     onChunk("❌ Terjadi kesalahan koneksi AI. Mohon coba lagi.");
     return "";
   }
+};
+
+// FUNGSI 2: Fallback (Tanpa Streaming) - UNTUK MEMPERBAIKI ERROR BUILD VERCEL
+export const processBotLogic = async (userMessage: string, context: BotContext, senderUsername: string = "@raflyz") => {
+  let result = "";
+  await processBotLogicStream(userMessage, context, (chunk) => { result += chunk; }, senderUsername);
+  return result;
 };
