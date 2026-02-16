@@ -10,12 +10,10 @@ interface BotConnectionProps {
   configs: LeaveConfig[];
   employees: Employee[];
   aliases: BotAlias[];
-  onCloudSync?: (type: 'push' | 'pull') => Promise<void>;
 }
 
-const BotConnection: React.FC<BotConnectionProps> = ({ settings, setSettings, configs, employees, aliases, onCloudSync }) => {
+const BotConnection: React.FC<BotConnectionProps> = ({ settings, setSettings, configs, employees, aliases }) => {
   const [localSettings, setLocalSettings] = useState(settings);
-  const [isSyncing, setIsSyncing] = useState(false);
   const [testStatus, setTestStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [botInfo, setBotInfo] = useState<any>(null);
 
@@ -107,10 +105,10 @@ const BotConnection: React.FC<BotConnectionProps> = ({ settings, setSettings, co
                     placeholder="12345678:AAH..."
                   />
               </div>
-              <div className="p-6 bg-amber-50 rounded-2xl border border-amber-100 flex gap-4">
-                 <AlertTriangle className="text-amber-600 shrink-0" size={20} />
-                 <p className="text-[10px] font-bold text-amber-800 leading-relaxed uppercase">
-                   Simpan token ini untuk mengaktifkan fitur <b>Live Bridge</b> di Simulator. Bot akan merespon di Telegram asli selama tab Admin ini kamu buka.
+              <div className="p-6 bg-indigo-50 rounded-2xl border border-indigo-100 flex gap-4">
+                 <ShieldCheck className="text-indigo-600 shrink-0" size={20} />
+                 <p className="text-[10px] font-bold text-indigo-800 leading-relaxed uppercase">
+                   <b>Auto-Sync Aktif</b>. Semua data karyawan dan riwayat akan otomatis tersinkron ke Cloud selama Token & Supabase Keys diisi dengan benar.
                  </p>
               </div>
            </div>
@@ -119,29 +117,34 @@ const BotConnection: React.FC<BotConnectionProps> = ({ settings, setSettings, co
         <div className="lg:col-span-6 bg-[#0f172a] p-10 rounded-[3rem] text-white shadow-xl space-y-8 border-b-8 border-indigo-500">
            <div className="flex items-center gap-3 border-b border-white/5 pb-6">
               <Database className="text-indigo-400" size={24} />
-              <h3 className="text-lg font-black uppercase italic">Supabase Sync</h3>
+              <h3 className="text-lg font-black uppercase italic">Supabase Cloud Sync</h3>
            </div>
            <div className="space-y-6">
-              <input 
-                  type="text" 
-                  value={localSettings?.supabaseUrl || ''}
-                  onChange={e => setLocalSettings({...localSettings, supabaseUrl: e.target.value})}
-                  className="w-full bg-white/5 border border-white/10 px-6 py-4 rounded-2xl font-bold text-white text-sm"
-                  placeholder="Supabase URL"
-                />
-              <input 
-                  type="password" 
-                  value={localSettings?.supabaseKey || ''}
-                  onChange={e => setLocalSettings({...localSettings, supabaseKey: e.target.value})}
-                  className="w-full bg-white/5 border border-white/10 px-6 py-4 rounded-2xl font-bold text-white text-sm"
-                  placeholder="Supabase Anon Key"
-                />
-              <button 
-                onClick={() => onCloudSync?.('push')}
-                className="w-full bg-indigo-600 text-white py-5 rounded-2xl font-black text-[11px] tracking-widest flex items-center justify-center gap-3 hover:bg-indigo-700 transition-all uppercase"
-              >
-                <Cloud size={18} /> PUSH DATA KE DATABASE CLOUD
-              </button>
+              <div className="space-y-2">
+                 <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Database URL</label>
+                 <input 
+                    type="text" 
+                    value={localSettings?.supabaseUrl || ''}
+                    onChange={e => setLocalSettings({...localSettings, supabaseUrl: e.target.value})}
+                    className="w-full bg-white/5 border border-white/10 px-6 py-4 rounded-2xl font-bold text-white text-sm"
+                    placeholder="https://xyz.supabase.co"
+                  />
+              </div>
+              <div className="space-y-2">
+                 <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Anon Key</label>
+                 <input 
+                    type="password" 
+                    value={localSettings?.supabaseKey || ''}
+                    onChange={e => setLocalSettings({...localSettings, supabaseKey: e.target.value})}
+                    className="w-full bg-white/5 border border-white/10 px-6 py-4 rounded-2xl font-bold text-white text-sm"
+                    placeholder="eyJhbG..."
+                  />
+              </div>
+              <div className="p-4 bg-emerald-500/10 rounded-2xl border border-emerald-500/20">
+                 <p className="text-[9px] text-emerald-400 font-bold italic leading-relaxed uppercase">
+                   Data akan otomatis terunduh saat Anda login di perangkat lain jika kunci ini sudah tersimpan.
+                 </p>
+              </div>
            </div>
         </div>
       </div>
