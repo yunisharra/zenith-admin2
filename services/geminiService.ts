@@ -9,18 +9,17 @@ interface BotContext {
   aliases: BotAlias[];
 }
 
-// FUNGSI 1: Untuk Streaming (Mengetik Kata demi Kata)
 export const processBotLogicStream = async (
   userMessage: string, 
   context: BotContext, 
   onChunk: (chunk: string) => void,
-  senderUsername: string = "@raflyz"
+  senderUsername: string = "@user"
 ) => {
   try {
     const apiKey = process.env.API_KEY;
     
     if (!apiKey || apiKey === "" || apiKey === "undefined") {
-      onChunk("⚠️ API_KEY tidak terdeteksi. Pastikan variabel bernama API_KEY sudah diisi di Vercel dan sudah melakukan REDEPLOY.");
+      onChunk("⚠️ API_KEY belum terpasang di Vercel. Bot tidak bisa berpikir tanpa kunci.");
       return "";
     }
 
@@ -37,25 +36,19 @@ export const processBotLogicStream = async (
     const config = context.configs.find(c => c.type === identifiedCategory);
     const customTemplate = config?.responseTemplate || "Izin {kategori} diterima. ({durasi} menit)";
 
-    const systemInstruction = `
-      Anda adalah "Zenith Bot", asisten HR perusahaan.
-      User saat ini: ${senderUsername}.
-      
-      MISI: Berikan izin jika pesan mengandung kata kunci izin. 
-      TEMPLATE WAJIB: "${customTemplate}"
-      DATA: Durasi=${config?.maxMinutes || 15}m, Kategori=${identifiedCategory || 'umum'}.
-      
-      Jika user tidak minta izin, jawab sangat singkat & profesional.
-      JANGAN bertele-tele. Jawab langsung to-the-point.
-    `;
+    // Short & Punchy system instruction for speed
+    const systemInstruction = `Role: Zenith HR Bot. User: ${senderUsername}. 
+    Mission: If user asks for permission (izin), reply using exactly: "${customTemplate}".
+    Values: Category=${identifiedCategory || 'Umum'}, Duration=${config?.maxMinutes || 15}m.
+    If not asking for permission, be extremely brief (max 10 words). No yapping.`;
 
     const responseStream = await ai.models.generateContentStream({
-      model: 'gemini-3-flash-preview',
+      model: 'gemini-flash-lite-latest', // Model paling ringan & cepat
       contents: userMessage,
       config: {
         systemInstruction,
         thinkingConfig: { thinkingBudget: 0 },
-        temperature: 0.5,
+        temperature: 0.3, // Lebih rendah agar lebih konsisten & cepat
       },
     });
 
@@ -70,14 +63,13 @@ export const processBotLogicStream = async (
 
     return fullText;
   } catch (error: any) {
-    console.error("Gemini Stream Error:", error);
-    onChunk("❌ Terjadi kesalahan koneksi AI. Mohon coba lagi.");
+    console.error("Gemini Error:", error);
+    onChunk("❌ Koneksi AI sibuk. Coba lagi sebentar lagi.");
     return "";
   }
 };
 
-// FUNGSI 2: Fallback (Tanpa Streaming) - UNTUK MEMPERBAIKI ERROR BUILD VERCEL
-export const processBotLogic = async (userMessage: string, context: BotContext, senderUsername: string = "@raflyz") => {
+export const processBotLogic = async (userMessage: string, context: BotContext, senderUsername: string = "@user") => {
   let result = "";
   await processBotLogicStream(userMessage, context, (chunk) => { result += chunk; }, senderUsername);
   return result;
