@@ -218,7 +218,7 @@ const App: React.FC = () => {
       case 'koneksi':
         return <BotConnection settings={botSettings} setSettings={setBotSettings} configs={configs} employees={employees} aliases={aliases} onCloudSync={handleCloudSync} />;
       case 'simulator': 
-        return <Simulator employees={employees} shifts={shifts} history={history} setHistory={setHistory} configs={configs} aliases={aliases} />;
+        return <Simulator employees={employees} shifts={shifts} history={history} setHistory={setHistory} configs={configs} aliases={aliases} botSettings={botSettings} />;
       case 'deployment':
         return <Deployment />;
       case 'pengaturan': 
