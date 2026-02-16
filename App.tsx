@@ -14,16 +14,15 @@ import BotConnection from './pages/BotConnection';
 import Deployment from './pages/Deployment';
 import Login from './pages/Login';
 import { createClient } from '@supabase/supabase-js';
-import { Cloud, CloudOff, Loader2, ShieldCheck, Database, Key, ArrowRight, Lock, UploadCloud, RefreshCw, Save, HardDrive } from 'lucide-react';
+import { Cloud, Loader2, ShieldCheck, Database, UploadCloud, RefreshCw, HardDrive, CheckCircle2 } from 'lucide-react';
 import { MOCK_BOT_ALIASES, MOCK_LEAVE_CONFIGS, MOCK_SHIFTS } from './constants';
 
 const App: React.FC = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [userEmail, setUserEmail] = useState<string>('');
   const [activePage, setActivePage] = useState<PageType>('dashboard');
-  const [syncStatus, setSyncStatus] = useState<'synced' | 'syncing' | 'offline' | 'error'>('synced');
-  const [localSaveStatus, setLocalSaveStatus] = useState<'saved' | 'saving'>('saved');
-  const [hasPulled, setHasPulled] = useState(false);
+  const [isCloudLoading, setIsCloudLoading] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<'synced' | 'syncing' | 'error'>('synced');
 
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [shifts, setShifts] = useState<Shift[]>(MOCK_SHIFTS);
@@ -40,7 +39,8 @@ const App: React.FC = () => {
     supabaseKey: ''
   });
 
-  const getStorageKey = (key: string) => `zenith_v2_${userEmail.replace(/[@.]/g, '_')}_${key}`;
+  const isInitialMount = useRef(true);
+  const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const getSupabase = (url?: string, key?: string) => {
     const sUrl = url || botSettings.supabaseUrl;
@@ -49,53 +49,79 @@ const App: React.FC = () => {
     return createClient(sUrl, sKey);
   };
 
-  // --- PERSISTENCE LAYER: LOCAL STORAGE ---
-  // Muat data awal dari localStorage (Hanya saat pertama login)
-  useEffect(() => {
-    if (isAuthenticated && userEmail && !hasPulled) {
-      const load = (key: string, fallback: any) => {
-        const val = localStorage.getItem(getStorageKey(key));
-        return val ? JSON.parse(val) : fallback;
-      };
+  // --- SINKRONISASI OTOMATIS KE CLOUD ---
+  const syncAllToCloud = useCallback(async () => {
+    const supabase = getSupabase();
+    if (!supabase || !isAuthenticated || isCloudLoading) return;
 
-      setEmployees(load('employees', []));
-      setShifts(load('shifts', MOCK_SHIFTS));
-      setHistory(load('history', []));
-      setAliases(load('aliases', MOCK_BOT_ALIASES));
-      setConfigs(load('configs', MOCK_LEAVE_CONFIGS));
-      
-      const savedBotSettings = load('bot_settings', null);
-      if (savedBotSettings) setBotSettings(prev => ({ ...prev, ...savedBotSettings }));
+    setSyncStatus('syncing');
+    try {
+      // Upsert Profil & Settings
+      await supabase.from('profiles').upsert({
+        email: userEmail,
+        bot_token: botSettings.botToken,
+        bot_username: botSettings.botUsername,
+        updated_at: new Date().toISOString()
+      });
+
+      // Sinkronisasi Karyawan (Hanya jika ada data)
+      if (employees.length > 0) {
+        await supabase.from('employees').upsert(
+          employees.map(e => ({
+            id: e.id, name: e.name, username: e.username, telegram_id: e.telegramId,
+            role: e.role, shift_id: e.shiftId, status: e.status, owner_email: userEmail
+          }))
+        );
+      }
+
+      // Sinkronisasi Shift
+      await supabase.from('shifts').upsert(
+        shifts.map(s => ({
+          id: s.id, name: s.name, start_time: s.startTime, end_time: s.endTime,
+          category: s.category, description: s.description, owner_email: userEmail
+        }))
+      );
+
+      // Sinkronisasi Config
+      await supabase.from('configs').upsert(
+        configs.map(c => ({
+          type: c.type, max_minutes: c.maxMinutes, max_per_day: c.maxPerDay,
+          response_template: c.responseTemplate, warning_template: c.warningTemplate, owner_email: userEmail
+        }))
+      );
+
+      setSyncStatus('synced');
+    } catch (err) {
+      console.error("Auto-sync failed:", err);
+      setSyncStatus('error');
     }
-  }, [isAuthenticated, userEmail]);
+  }, [employees, shifts, configs, botSettings, userEmail, isAuthenticated, isCloudLoading]);
 
-  // Simpan otomatis ke localStorage SETIAP ADA PERUBAHAN
-  // KRITIKAL: Jangan simpan jika sistem sedang menarik data dari Cloud (hasPulled check)
+  // Debounced Auto-Sync: Setiap kali state berubah, simpan ke cloud otomatis setelah 2 detik diam
   useEffect(() => {
-    if (!isAuthenticated || !userEmail || !hasPulled) return;
-    
-    setLocalSaveStatus('saving');
-    const timer = setTimeout(() => {
-      localStorage.setItem(getStorageKey('employees'), JSON.stringify(employees));
-      localStorage.setItem(getStorageKey('shifts'), JSON.stringify(shifts));
-      localStorage.setItem(getStorageKey('history'), JSON.stringify(history));
-      localStorage.setItem(getStorageKey('aliases'), JSON.stringify(aliases));
-      localStorage.setItem(getStorageKey('configs'), JSON.stringify(configs));
-      localStorage.setItem(getStorageKey('bot_settings'), JSON.stringify(botSettings));
-      setLocalSaveStatus('saved');
-    }, 1000);
-    return () => clearTimeout(timer);
-  }, [employees, shifts, history, aliases, configs, botSettings, isAuthenticated, userEmail, hasPulled]);
-
-  // --- PERSISTENCE LAYER: CLOUD (SUPABASE) ---
-  const pullAllFromCloud = useCallback(async (email: string, settings: BotSettings, manual: boolean = false) => {
-    const supabase = getSupabase(settings.supabaseUrl, settings.supabaseKey);
-    if (!supabase) {
-      setHasPulled(true); // Izinkan autosave jika tidak ada supabase
+    if (isInitialMount.current || isCloudLoading) {
+      isInitialMount.current = false;
       return;
     }
-    
+
+    if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
+    syncTimeoutRef.current = setTimeout(() => {
+      syncAllToCloud();
+    }, 2000);
+
+    return () => {
+      if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
+    };
+  }, [employees, shifts, configs, botSettings, syncAllToCloud, isCloudLoading]);
+
+  // --- PENARIKAN DATA WAJIB (STARTUP) ---
+  const pullEverything = useCallback(async (email: string, settings: BotSettings) => {
+    const supabase = getSupabase(settings.supabaseUrl, settings.supabaseKey);
+    if (!supabase) return;
+
+    setIsCloudLoading(true);
     setSyncStatus('syncing');
+
     try {
       const { data: prof } = await supabase.from('profiles').select('*').eq('email', email).maybeSingle();
       if (prof) {
@@ -103,6 +129,8 @@ const App: React.FC = () => {
           ...prev,
           botToken: prof.bot_token || '',
           botUsername: prof.bot_username || '@ZenithBot',
+          supabaseUrl: settings.supabaseUrl,
+          supabaseKey: settings.supabaseKey
         }));
       }
 
@@ -131,81 +159,26 @@ const App: React.FC = () => {
       }
 
       setSyncStatus('synced');
-      setHasPulled(true); // DATA BERHASIL DITARIK, SEKARANG AMAN UNTUK AUTOSAVE
-      if (manual) alert("✅ DATA CLOUD PULIH!");
     } catch (err) {
-      console.error("Pull error:", err);
+      console.error("Initial pull failed:", err);
       setSyncStatus('error');
-      setHasPulled(true); // Fallback agar user tetap bisa pakai lokal
+    } finally {
+      setIsCloudLoading(false);
     }
   }, []);
-
-  const pushToCloud = useCallback(async (manual: boolean = false) => {
-    const supabase = getSupabase();
-    if (!supabase || !isAuthenticated) {
-        if (manual) alert("Hubungkan Supabase terlebih dahulu!");
-        return;
-    }
-    
-    setSyncStatus('syncing');
-    try {
-      // 1. Profil
-      await supabase.from('profiles').upsert({
-        email: userEmail,
-        bot_token: botSettings.botToken,
-        bot_username: botSettings.botUsername,
-        updated_at: new Date().toISOString()
-      }, { onConflict: 'email' });
-
-      // 2. Employees
-      if (employees.length > 0) {
-        const empPayload = employees.map(e => ({
-          id: e.id, name: e.name, username: e.username, telegram_id: e.telegramId,
-          role: e.role, shift_id: e.shiftId, status: e.status, owner_email: userEmail
-        }));
-        await supabase.from('employees').upsert(empPayload);
-      }
-
-      // 3. Shifts
-      if (shifts.length > 0) {
-        const shftPayload = shifts.map(s => ({
-          id: s.id, name: s.name, start_time: s.startTime, end_time: s.endTime,
-          category: s.category, description: s.description, owner_email: userEmail
-        }));
-        await supabase.from('shifts').upsert(shftPayload);
-      }
-
-      // 4. Configs
-      if (configs.length > 0) {
-        const cfgPayload = configs.map(c => ({
-          type: c.type, max_minutes: c.maxMinutes, max_per_day: c.maxPerDay,
-          response_template: c.responseTemplate, warning_template: c.warningTemplate, owner_email: userEmail
-        }));
-        await supabase.from('configs').upsert(cfgPayload);
-      }
-
-      setSyncStatus('synced');
-      if (manual) alert("🚀 BERHASIL! Data sekarang ada di Cloud.");
-    } catch (err) {
-      console.error("Push error:", err);
-      setSyncStatus('error');
-      if (manual) alert("Gagal push ke cloud. Cek apakah Anda sudah membuat tabel di Supabase.");
-    }
-  }, [employees, shifts, configs, botSettings, userEmail, isAuthenticated]);
 
   const handleLogin = (email: string) => {
     setUserEmail(email);
     setIsAuthenticated(true);
-    localStorage.setItem('zenith_active_session', email);
     
     const storageKey = `zenith_cloud_key_${email.replace(/[@.]/g, '_')}`;
     const savedKeys = localStorage.getItem(storageKey);
+    
     if (savedKeys) {
       const keys = JSON.parse(savedKeys);
       setBotSettings(prev => ({ ...prev, ...keys }));
-      pullAllFromCloud(email, keys);
+      pullEverything(email, keys);
     } else {
-      setHasPulled(true);
       setActivePage('koneksi');
     }
   };
@@ -217,21 +190,27 @@ const App: React.FC = () => {
     window.location.reload();
   };
 
-  // Re-pull data saat pertama kali aplikasi dimuat (Auto-Login case)
   useEffect(() => {
     const savedEmail = localStorage.getItem('zenith_active_session');
-    if (savedEmail && !hasPulled) {
-      const storageKey = `zenith_cloud_key_${savedEmail.replace(/[@.]/g, '_')}`;
-      const savedKeys = localStorage.getItem(storageKey);
-      if (savedKeys) {
-        pullAllFromCloud(savedEmail, JSON.parse(savedKeys));
-      } else {
-        setHasPulled(true);
-      }
+    if (savedEmail) {
+      handleLogin(savedEmail);
     }
-  }, [pullAllFromCloud, hasPulled]);
+  }, []);
 
   if (!isAuthenticated) return <Login onLogin={handleLogin} />;
+
+  if (isCloudLoading) {
+    return (
+      <div className="min-h-screen bg-[#020617] flex flex-col items-center justify-center p-6">
+        <div className="w-24 h-24 bg-indigo-600/20 rounded-full flex items-center justify-center mb-8 relative">
+           <div className="absolute inset-0 bg-indigo-500 rounded-full animate-ping opacity-20" />
+           <RefreshCw size={40} className="text-indigo-500 animate-spin" />
+        </div>
+        <h2 className="text-white text-xl font-black uppercase tracking-widest mb-2 italic">Menyinkronkan Data...</h2>
+        <p className="text-slate-500 text-[10px] font-bold uppercase tracking-[0.3em]">Mohon tunggu, menarik identitas dari cloud</p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-screen bg-[#f8f9fd]">
@@ -239,31 +218,20 @@ const App: React.FC = () => {
       <main className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden">
         <div className="bg-white px-12 py-4 border-b border-slate-200/60 flex justify-between items-center shadow-sm z-20">
            <div className="flex items-center gap-4">
-              <div className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border ${!hasPulled ? 'bg-indigo-50 border-indigo-100 text-indigo-500 animate-pulse' : localSaveStatus === 'saving' ? 'bg-amber-50 border-amber-100 text-amber-600' : 'bg-emerald-50 border-emerald-100 text-emerald-600'}`}>
-                 {!hasPulled ? <RefreshCw size={12} className="animate-spin" /> : localSaveStatus === 'saving' ? <Loader2 size={12} className="animate-spin" /> : <HardDrive size={12} />}
+              <div className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border ${syncStatus === 'syncing' ? 'bg-indigo-50 border-indigo-100 text-indigo-500' : 'bg-emerald-50 border-emerald-100 text-emerald-600'}`}>
+                 {syncStatus === 'syncing' ? <RefreshCw size={12} className="animate-spin" /> : <ShieldCheck size={12} />}
                  <span className="text-[9px] font-black uppercase tracking-widest">
-                   {!hasPulled ? 'Syncing Cloud...' : localSaveStatus === 'saving' ? 'Saving Disk...' : 'Data Aman di Browser'}
+                   {syncStatus === 'syncing' ? 'LIVE SYNCING...' : 'CLOUD PROTECTED'}
                  </span>
               </div>
-
-              <div className="w-px h-6 bg-slate-100 mx-2" />
-
-              <div className={`flex items-center gap-2 ${syncStatus === 'synced' ? 'text-indigo-600' : syncStatus === 'error' ? 'text-rose-500' : 'text-slate-400'}`}>
-                 <Database size={14} />
-                 <span className="text-[10px] font-black uppercase tracking-widest">{syncStatus === 'synced' ? 'Cloud Terhubung' : 'Cloud Offline'}</span>
+              <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest">
+                 ID: {userEmail.split('@')[0]}
               </div>
-              
-              <button 
-                onClick={() => pushToCloud(true)} 
-                className="ml-4 flex items-center gap-2 px-6 py-2 bg-[#0f172a] text-white rounded-xl text-[9px] font-black uppercase tracking-widest shadow-xl shadow-slate-200 hover:bg-black transition-all active:scale-95"
-              >
-                <UploadCloud size={14} /> KIRIM KE CLOUD
-              </button>
            </div>
            
            <div className="flex items-center gap-6">
               <div className="text-right">
-                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none">Admin Panel</p>
+                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none">Status: Global Online</p>
                   <p className="text-[11px] font-bold text-slate-700 mt-1.5">{userEmail}</p>
               </div>
               <div className="w-10 h-10 bg-indigo-600 rounded-2xl flex items-center justify-center text-white text-xs font-black shadow-lg">
@@ -280,7 +248,7 @@ const App: React.FC = () => {
             {activePage === 'histori' && <History history={history} setHistory={setHistory} />}
             {activePage === 'bot-intelligence' && <BotIntelligence aliases={aliases} setAliases={setAliases} />}
             {activePage === 'respon' && <Respon configs={configs} setConfigs={setConfigs} />}
-            {activePage === 'koneksi' && <BotConnection settings={botSettings} setSettings={setBotSettings} onForcePush={() => pushToCloud(true)} onForcePull={() => pullAllFromCloud(userEmail, botSettings, true)} configs={configs} employees={employees} aliases={aliases} />}
+            {activePage === 'koneksi' && <BotConnection settings={botSettings} setSettings={setBotSettings} onForcePush={syncAllToCloud} onForcePull={() => pullEverything(userEmail, botSettings)} configs={configs} employees={employees} aliases={aliases} />}
             {activePage === 'simulator' && <Simulator employees={employees} shifts={shifts} history={history} setHistory={setHistory} configs={configs} aliases={aliases} botSettings={botSettings} />}
             {activePage === 'deployment' && <Deployment />}
             {activePage === 'pengaturan' && <Settings configs={configs} setConfigs={setConfigs} userEmail={userEmail} />}
