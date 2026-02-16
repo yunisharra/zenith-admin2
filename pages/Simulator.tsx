@@ -1,8 +1,7 @@
-
 import React, { useState, useRef, useEffect } from 'react';
 import { Send, Terminal, Bot, User, Trash2, Cpu, Info, ShieldCheck, AlertTriangle, Loader2 } from 'lucide-react';
 import { Message, Employee, Shift, LeaveHistory, LeaveConfig, BotAlias } from '../types';
-import { processBotLogic } from '../services/geminiService';
+import { processBotLogicStream } from '../services/geminiService';
 
 interface SimulatorProps {
   employees: Employee[];
@@ -32,15 +31,27 @@ const Simulator: React.FC<SimulatorProps> = ({ employees, shifts, history, setHi
     if (!input.trim() || isLoading) return;
 
     const userMsg: Message = { id: Date.now().toString(), sender: 'user', text: input, timestamp: new Date() };
-    setMessages(prev => [...prev, userMsg]);
+    const botId = (Date.now() + 1).toString();
+    const placeholderBotMsg: Message = { id: botId, sender: 'bot', text: '', timestamp: new Date() };
+
+    setMessages(prev => [...prev, userMsg, placeholderBotMsg]);
     setInput('');
     setIsLoading(true);
 
-    const botText = await processBotLogic(input, { employees, shifts, history, configs, aliases }, senderUser);
+    let fullBotText = "";
     
-    // Deteksi apakah pesan bot mengandung konfirmasi izin
-    // Jika iya, catat ke Dashboard
-    const isApproved = botText.toLowerCase().includes("diterima") || botText.toLowerCase().includes("konfirmasi");
+    await processBotLogicStream(
+      input, 
+      { employees, shifts, history, configs, aliases }, 
+      (chunk) => {
+        fullBotText += chunk;
+        setMessages(prev => prev.map(m => m.id === botId ? { ...m, text: fullBotText } : m));
+      }, 
+      senderUser
+    );
+
+    // Logging Logika Izin ke Dashboard setelah stream selesai
+    const isApproved = fullBotText.toLowerCase().includes("diterima") || fullBotText.toLowerCase().includes("konfirmasi");
     
     if (isApproved) {
       let detectedType: any = "Lainnya";
@@ -69,14 +80,6 @@ const Simulator: React.FC<SimulatorProps> = ({ employees, shifts, history, setHi
       setHistory(prev => [newHistory, ...prev]);
     }
 
-    const botMsg: Message = { 
-      id: (Date.now() + 1).toString(), 
-      sender: 'bot', 
-      text: botText, 
-      timestamp: new Date()
-    };
-    
-    setMessages(prev => [...prev, botMsg]);
     setIsLoading(false);
   };
 
@@ -111,14 +114,14 @@ const Simulator: React.FC<SimulatorProps> = ({ employees, shifts, history, setHi
               <div>
                 <span className="block font-black text-[#0f172a] uppercase text-sm tracking-tight">Zenith AI Assistant</span>
                 <span className="flex items-center gap-1.5 text-[9px] font-bold text-emerald-500 uppercase tracking-widest">
-                  <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" /> Auto-Logging Ready
+                  <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" /> Stream Engine Active
                 </span>
               </div>
             </div>
-            <button onClick={() => setMessages([])} className="p-3 text-slate-300 hover:text-rose-500 transition-all"><Trash2 size={20} /></button>
+            <button onClick={() => setMessages([{ id: '1', sender: 'bot', text: 'Halo! Saya Zenith Bot.', timestamp: new Date() }])} className="p-3 text-slate-300 hover:text-rose-500 transition-all"><Trash2 size={20} /></button>
           </div>
 
-          <div ref={scrollRef} className="flex-1 overflow-y-auto p-8 space-y-8 bg-slate-50/20">
+          <div ref={scrollRef} className="flex-1 overflow-y-auto p-8 space-y-8 bg-slate-50/20 custom-scrollbar">
             {messages.map((msg) => (
               <div key={msg.id} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
                 <div className={`max-w-[85%] flex gap-4 ${msg.sender === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
@@ -135,7 +138,15 @@ const Simulator: React.FC<SimulatorProps> = ({ employees, shifts, history, setHi
                         : 'bg-indigo-600 text-white rounded-tl-none'
                       }`}
                     >
-                      <p className="text-sm font-bold leading-relaxed whitespace-pre-wrap">{msg.text}</p>
+                      {msg.text === '' && msg.sender === 'bot' ? (
+                        <div className="flex gap-1 py-1">
+                           <div className="w-1.5 h-1.5 bg-white/40 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                           <div className="w-1.5 h-1.5 bg-white/40 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                           <div className="w-1.5 h-1.5 bg-white/40 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                        </div>
+                      ) : (
+                        <p className="text-sm font-bold leading-relaxed whitespace-pre-wrap">{msg.text}</p>
+                      )}
                     </div>
                     <p className={`text-[9px] font-black text-slate-400 uppercase tracking-widest ${msg.sender === 'user' ? 'text-right' : 'text-left'}`}>
                       {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -144,14 +155,6 @@ const Simulator: React.FC<SimulatorProps> = ({ employees, shifts, history, setHi
                 </div>
               </div>
             ))}
-            {isLoading && (
-              <div className="flex justify-start animate-in fade-in">
-                 <div className="bg-indigo-100 text-indigo-400 p-4 rounded-2xl flex items-center gap-2">
-                    <Loader2 size={16} className="animate-spin" />
-                    <span className="text-[10px] font-black uppercase tracking-widest">Bot sedang berpikir...</span>
-                 </div>
-              </div>
-            )}
           </div>
 
           <div className="p-8 border-t border-slate-100 bg-white">
@@ -169,7 +172,7 @@ const Simulator: React.FC<SimulatorProps> = ({ employees, shifts, history, setHi
                 disabled={isLoading || !input.trim()}
                 className="bg-indigo-600 text-white px-8 py-5 rounded-3xl hover:bg-indigo-700 disabled:opacity-50 transition-all shadow-xl shadow-indigo-100 font-black text-xs uppercase tracking-widest"
               >
-                Kirim
+                {isLoading ? <Loader2 className="animate-spin" size={18} /> : "Kirim"}
               </button>
             </div>
           </div>
@@ -186,11 +189,11 @@ const Simulator: React.FC<SimulatorProps> = ({ employees, shifts, history, setHi
               </div>
               <div className="space-y-6 text-sm font-medium text-slate-400 leading-relaxed overflow-y-auto custom-scrollbar">
                  <div className="bg-slate-900/50 p-6 rounded-2xl border border-slate-800">
-                    <p className="text-indigo-400 font-black text-[10px] uppercase mb-2 tracking-widest">Catatan Penting:</p>
+                    <p className="text-indigo-400 font-black text-[10px] uppercase mb-2 tracking-widest">Catatan Kecepatan:</p>
                     <ul className="space-y-3 list-disc pl-4 text-xs italic">
-                       <li>Setiap pesan izin yang berhasil dideteksi di Simulator akan otomatis menambah entri baru di <b>Dashboard</b>.</li>
-                       <li>Jika menggunakan Bot asli di Telegram, Anda harus melakukan <b>Sync Data</b> di menu Koneksi Bot agar bot remote mengenal karyawan Anda.</li>
-                       <li>Dashboard hanya akan menampilkan data hari ini sesuai dengan tanggal sistem.</li>
+                       <li>Sekarang bot menggunakan <b>Streaming Engine</b>. Anda akan melihat jawaban muncul seketika saat data diterima dari server Google.</li>
+                       <li><b>Thinking Budget</b> dimatikan (0) untuk menjamin latensi terendah.</li>
+                       <li>Jika masih lambat, periksa koneksi internet Anda atau pastikan API_KEY valid.</li>
                     </ul>
                  </div>
               </div>
