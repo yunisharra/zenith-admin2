@@ -40,47 +40,51 @@ const Simulator: React.FC<SimulatorProps> = ({ employees, shifts, history, setHi
 
     let fullBotText = "";
     
-    await processBotLogicStream(
-      input, 
-      { employees, shifts, history, configs, aliases }, 
-      (chunk) => {
-        fullBotText += chunk;
-        setMessages(prev => prev.map(m => m.id === botId ? { ...m, text: fullBotText } : m));
-      }, 
-      senderUser
-    );
+    try {
+      await processBotLogicStream(
+        input, 
+        { employees, shifts, history, configs, aliases }, 
+        (chunk) => {
+          fullBotText += chunk;
+          setMessages(prev => prev.map(m => m.id === botId ? { ...m, text: fullBotText } : m));
+        }, 
+        senderUser
+      );
 
-    // Logging Logika Izin ke Dashboard setelah stream selesai
-    const isApproved = fullBotText.toLowerCase().includes("diterima") || fullBotText.toLowerCase().includes("konfirmasi");
-    
-    if (isApproved) {
-      let detectedType: any = "Lainnya";
-      for (const alias of aliases) {
-        if (alias.keywords.some(k => input.toLowerCase().includes(k.toLowerCase()))) {
-          detectedType = alias.category;
-          break;
+      // Logging Logika Izin ke Dashboard setelah stream selesai
+      const isApproved = fullBotText.toLowerCase().includes("diterima") || fullBotText.toLowerCase().includes("konfirmasi");
+      
+      if (isApproved) {
+        let detectedType: any = "Lainnya";
+        for (const alias of aliases) {
+          if (alias.keywords.some(k => input.toLowerCase().includes(k.toLowerCase()))) {
+            detectedType = alias.category;
+            break;
+          }
         }
+
+        const emp = employees.find(e => e.username === senderUser);
+        const now = new Date();
+        const timeStr = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
+        const dateStr = now.toISOString().split('T')[0];
+
+        const newHistory: LeaveHistory = {
+          id: 'hist-' + Date.now(),
+          employeeName: emp?.name || senderUser,
+          type: detectedType,
+          timeOut: timeStr,
+          timeIn: '--',
+          date: dateStr,
+          status: 'Tepat'
+        };
+
+        setHistory(prev => [newHistory, ...prev]);
       }
-
-      const emp = employees.find(e => e.username === senderUser);
-      const now = new Date();
-      const timeStr = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
-      const dateStr = now.toISOString().split('T')[0];
-
-      const newHistory: LeaveHistory = {
-        id: 'hist-' + Date.now(),
-        employeeName: emp?.name || senderUser,
-        type: detectedType,
-        timeOut: timeStr,
-        timeIn: '--',
-        date: dateStr,
-        status: 'Tepat'
-      };
-
-      setHistory(prev => [newHistory, ...prev]);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsLoading(false);
     }
-
-    setIsLoading(false);
   };
 
   return (
