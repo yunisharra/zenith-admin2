@@ -1,3 +1,4 @@
+
 import { GoogleGenAI } from "@google/genai";
 import { Employee, Shift, LeaveHistory, LeaveConfig, BotAlias } from "../types";
 
@@ -16,14 +17,14 @@ export const processBotLogicStream = async (
   senderUsername: string = "@user"
 ) => {
   try {
-    const apiKey = process.env.API_KEY;
-    
-    if (!apiKey || apiKey === "" || apiKey === "undefined") {
+    // Check for API_KEY environment variable directly
+    if (!process.env.API_KEY || process.env.API_KEY === "" || process.env.API_KEY === "undefined") {
       onChunk("⚠️ API_KEY belum terpasang di Vercel. Bot tidak bisa berpikir tanpa kunci.");
       return "";
     }
 
-    const ai = new GoogleGenAI({ apiKey });
+    // Always use process.env.API_KEY directly in the initialization
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     
     let identifiedCategory: string | null = null;
     for (const alias of context.aliases) {
@@ -42,18 +43,20 @@ export const processBotLogicStream = async (
     Values: Category=${identifiedCategory || 'Umum'}, Duration=${config?.maxMinutes || 15}m.
     If not asking for permission, be extremely brief (max 10 words). No yapping.`;
 
+    // Use recommended 'gemini-3-flash-preview' for basic text tasks
     const responseStream = await ai.models.generateContentStream({
-      model: 'gemini-flash-lite-latest', // Model paling ringan & cepat
+      model: 'gemini-3-flash-preview',
       contents: userMessage,
       config: {
         systemInstruction,
         thinkingConfig: { thinkingBudget: 0 },
-        temperature: 0.3, // Lebih rendah agar lebih konsisten & cepat
+        temperature: 0.3, // Lower temperature for more consistent reasoning
       },
     });
 
     let fullText = "";
     for await (const chunk of responseStream) {
+      // Correct access to the text property (not a method)
       const text = chunk.text;
       if (text) {
         fullText += text;
