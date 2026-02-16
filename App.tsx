@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Sidebar from './components/Sidebar';
 import { PageType, Employee, Shift, LeaveHistory, BotAlias, LeaveConfig, BotSettings } from './types';
 import Dashboard from './pages/Dashboard';
@@ -13,11 +13,8 @@ import BotConnection from './pages/BotConnection';
 import Deployment from './pages/Deployment';
 import Login from './pages/Login';
 import { createClient } from '@supabase/supabase-js';
-import { Download, Monitor, Smartphone, X, Sparkles } from 'lucide-react';
+import { Cloud, CloudOff, Loader2, ShieldCheck, Globe } from 'lucide-react';
 import { 
-  MOCK_EMPLOYEES, 
-  MOCK_SHIFTS, 
-  MOCK_HISTORI_7_HARI, 
   MOCK_BOT_ALIASES, 
   MOCK_LEAVE_CONFIGS 
 } from './constants';
@@ -26,43 +23,7 @@ const App: React.FC = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [userEmail, setUserEmail] = useState<string>('');
   const [activePage, setActivePage] = useState<PageType>('dashboard');
-  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
-  const [showInstallBanner, setShowInstallBanner] = useState(false);
-
-  // Load active session on mount
-  useEffect(() => {
-    const savedSession = localStorage.getItem('zenith_active_session');
-    if (savedSession) {
-      setUserEmail(savedSession);
-      setIsAuthenticated(true);
-    }
-  }, []);
-
-  // PWA Installation Logic
-  useEffect(() => {
-    const handleBeforeInstallPrompt = (e: any) => {
-      e.preventDefault();
-      setDeferredPrompt(e);
-      if (isAuthenticated) {
-        setShowInstallBanner(true);
-      }
-    };
-
-    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-    return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-  }, [isAuthenticated]);
-
-  const handleInstallClick = async () => {
-    if (!deferredPrompt) return;
-    deferredPrompt.prompt();
-    const { outcome } = await deferredPrompt.userChoice;
-    if (outcome === 'accepted') {
-      setShowInstallBanner(false);
-    }
-    setDeferredPrompt(null);
-  };
-
-  const getDataKey = (key: string) => `zenith_user_${userEmail.replace(/[@.]/g, '_')}_${key}`;
+  const [syncStatus, setSyncStatus] = useState<'synced' | 'syncing' | 'offline' | 'error'>('synced');
 
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [shifts, setShifts] = useState<Shift[]>([]);
@@ -79,212 +40,179 @@ const App: React.FC = () => {
     supabaseKey: ''
   });
 
-  // Load Data for current user
-  useEffect(() => {
-    if (isAuthenticated && userEmail) {
-      const savedEmp = localStorage.getItem(getDataKey('employees'));
-      const savedShifts = localStorage.getItem(getDataKey('shifts'));
-      const savedHistory = localStorage.getItem(getDataKey('history'));
-      const savedAliases = localStorage.getItem(getDataKey('aliases'));
-      const savedConfigs = localStorage.getItem(getDataKey('configs'));
-      const savedBot = localStorage.getItem(getDataKey('bot_settings'));
+  // Fungsi Helper untuk Supabase
+  const getSupabase = () => {
+    if (!botSettings.supabaseUrl || !botSettings.supabaseKey) return null;
+    return createClient(botSettings.supabaseUrl, botSettings.supabaseKey);
+  };
 
-      setEmployees(savedEmp ? JSON.parse(savedEmp) : MOCK_EMPLOYEES);
-      setShifts(savedShifts ? JSON.parse(savedShifts) : MOCK_SHIFTS);
-      setHistory(savedHistory ? JSON.parse(savedHistory) : MOCK_HISTORI_7_HARI);
-      setAliases(savedAliases ? JSON.parse(savedAliases) : MOCK_BOT_ALIASES);
-      setConfigs(savedConfigs ? JSON.parse(savedConfigs) : MOCK_LEAVE_CONFIGS);
-      
-      if (savedBot) setBotSettings(JSON.parse(savedBot));
-    }
-  }, [isAuthenticated, userEmail]);
-
-  // Auto-save data on changes
-  useEffect(() => {
-    if (isAuthenticated && userEmail) {
-      localStorage.setItem(getDataKey('employees'), JSON.stringify(employees));
-      localStorage.setItem(getDataKey('shifts'), JSON.stringify(shifts));
-      localStorage.setItem(getDataKey('history'), JSON.stringify(history));
-      localStorage.setItem(getDataKey('aliases'), JSON.stringify(aliases));
-      localStorage.setItem(getDataKey('configs'), JSON.stringify(configs));
-      localStorage.setItem(getDataKey('bot_settings'), JSON.stringify(botSettings));
-    }
-  }, [employees, shifts, history, aliases, configs, botSettings]);
-
-  const handleCloudSync = async (type: 'push' | 'pull') => {
-    if (!botSettings.supabaseUrl || !botSettings.supabaseKey) {
-      alert("⚠️ Konfigurasi Supabase belum lengkap!");
-      return;
-    }
-
-    const supabase = createClient(botSettings.supabaseUrl, botSettings.supabaseKey);
+  // CLOUD ENGINE: PULL DATA
+  const pullAllFromCloud = useCallback(async (email: string, settings: BotSettings) => {
+    if (!settings.supabaseUrl || !settings.supabaseKey) return;
+    
+    setSyncStatus('syncing');
+    const supabase = createClient(settings.supabaseUrl, settings.supabaseKey);
 
     try {
-      if (type === 'push') {
-        const formattedEmployees = employees.map(emp => ({
-          id: emp.id,
-          name: emp.name,
-          username: emp.username,
-          telegram_id: emp.telegramId,
-          role: emp.role,
-          shift_id: emp.shiftId,
-          status: emp.status
-        }));
-        
-        const { error: empError } = await supabase.from('employees').upsert(formattedEmployees);
-        if (empError) throw empError;
+      // 1. Pull Employees
+      const { data: empData } = await supabase.from('employees').select('*').eq('owner_email', email);
+      if (empData) setEmployees(empData.map(d => ({
+        id: d.id, name: d.name, username: d.username, telegramId: d.telegram_id,
+        role: d.role, shiftId: d.shift_id, status: d.status
+      })));
 
-        const formattedHistory = history.map(h => ({
-          id: h.id,
-          employee_name: h.employeeName,
-          type: h.type,
-          time_out: h.timeOut,
-          time_in: h.timeIn,
-          date: h.date,
-          status: h.status
-        }));
+      // 2. Pull History (100 Terakhir)
+      const { data: histData } = await supabase.from('history').select('*').eq('owner_email', email).order('id', { ascending: false }).limit(100);
+      if (histData) setHistory(histData.map(d => ({
+        id: d.id, employeeName: d.employee_name, type: d.type,
+        timeOut: d.time_out, timeIn: d.time_in, date: d.date, status: d.status
+      })));
 
-        const { error: histError } = await supabase.from('history').upsert(formattedHistory);
-        if (histError) throw histError;
+      // 3. Pull Configs
+      const { data: confData } = await supabase.from('configs').select('*').eq('owner_email', email);
+      if (confData && confData.length > 0) setConfigs(confData.map(d => ({
+        type: d.type, maxMinutes: d.max_minutes, maxPerDay: d.max_per_day,
+        responseTemplate: d.response_template, warningTemplate: d.warning_template
+      })));
 
-        alert("🚀 CLOUD SYNC SUCCESS! Data berhasil diunggah ke database cloud.");
-      } else {
-        const { data: empData, error: empError } = await supabase.from('employees').select('*');
-        if (empError) throw empError;
-
-        if (empData) {
-          const mappedEmp: Employee[] = empData.map(d => ({
-            id: d.id,
-            name: d.name,
-            username: d.username,
-            telegramId: d.telegram_id,
-            role: d.role as any,
-            shiftId: d.shift_id,
-            status: d.status as any
-          }));
-          setEmployees(mappedEmp);
-        }
-
-        const { data: histData, error: histError } = await supabase.from('history').select('*');
-        if (histError) throw histError;
-
-        if (histData) {
-          const mappedHist: LeaveHistory[] = histData.map(d => ({
-            id: d.id,
-            employeeName: d.employee_name,
-            type: d.type as any,
-            timeOut: d.time_out,
-            timeIn: d.time_in,
-            date: d.date,
-            status: d.status as any
-          }));
-          setHistory(mappedHist);
-        }
-
-        alert("📥 RECOVERY SUCCESS! Data berhasil dipulihkan dari cloud.");
-      }
-    } catch (err: any) {
-      console.error(err);
-      alert(`❌ ERROR: ${err.message || "Gagal menghubungi Supabase"}`);
+      setSyncStatus('synced');
+    } catch (err) {
+      console.error("Cloud Pull Failed:", err);
+      setSyncStatus('error');
     }
-  };
+  }, []);
+
+  // CLOUD ENGINE: PUSH DATA
+  const pushToCloud = useCallback(async () => {
+    const supabase = getSupabase();
+    if (!supabase || !isAuthenticated) return;
+    
+    setSyncStatus('syncing');
+    try {
+      // Upsert Employees
+      const empPayload = employees.map(e => ({
+        id: e.id, name: e.name, username: e.username, telegram_id: e.telegramId,
+        role: e.role, shift_id: e.shiftId, status: e.status, owner_email: userEmail
+      }));
+      if (empPayload.length > 0) await supabase.from('employees').upsert(empPayload);
+
+      // Upsert History
+      const histPayload = history.slice(0, 50).map(h => ({
+        id: h.id, employee_name: h.employeeName, type: h.type,
+        time_out: h.timeOut, time_in: h.timeIn, date: h.date, status: h.status, owner_email: userEmail
+      }));
+      if (histPayload.length > 0) await supabase.from('history').upsert(histPayload);
+
+      // Upsert Configs
+      const confPayload = configs.map(c => ({
+        type: c.type, max_minutes: c.maxMinutes, max_per_day: c.maxPerDay,
+        response_template: c.responseTemplate, warning_template: c.warningTemplate, owner_email: userEmail
+      }));
+      await supabase.from('configs').upsert(confPayload);
+
+      setSyncStatus('synced');
+    } catch (err) {
+      setSyncStatus('error');
+    }
+  }, [employees, history, configs, botSettings, userEmail, isAuthenticated]);
+
+  // AUTO-SYNC LOGIC (Debounced 3s)
+  useEffect(() => {
+    if (isAuthenticated && userEmail) {
+      const timer = setTimeout(() => pushToCloud(), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [employees, history, configs, isAuthenticated, pushToCloud]);
+
+  // INITIAL SESSION & RECOVERY
+  useEffect(() => {
+    const savedSession = localStorage.getItem('zenith_active_session');
+    if (savedSession) {
+      setUserEmail(savedSession);
+      setIsAuthenticated(true);
+      
+      const key = `zenith_user_${savedSession.replace(/[@.]/g, '_')}_bot_settings`;
+      const savedBot = localStorage.getItem(key);
+      if (savedBot) {
+        const parsedBot = JSON.parse(savedBot);
+        setBotSettings(parsedBot);
+        pullAllFromCloud(savedSession, parsedBot);
+      }
+    }
+  }, [pullAllFromCloud]);
 
   const handleLogin = (email: string) => {
     setUserEmail(email);
     setIsAuthenticated(true);
+    const key = `zenith_user_${email.replace(/[@.]/g, '_')}_bot_settings`;
+    const savedBot = localStorage.getItem(key);
+    if (savedBot) {
+      const parsed = JSON.parse(savedBot);
+      setBotSettings(parsed);
+      pullAllFromCloud(email, parsed);
+    }
   };
 
   const handleLogout = () => {
     localStorage.removeItem('zenith_active_session');
     setIsAuthenticated(false);
     setUserEmail('');
-    setActivePage('dashboard');
-  };
-
-  const renderPage = () => {
-    switch (activePage) {
-      case 'dashboard': 
-        return <Dashboard employees={employees} history={history} shifts={shifts} setHistory={setHistory} configs={configs} />;
-      case 'karyawan': 
-        return <Employees employees={employees} setEmployees={setEmployees} shifts={shifts} />;
-      case 'shift': 
-        return <Shifts shifts={shifts} setShifts={setShifts} employees={employees} setEmployees={setEmployees} setHistory={setHistory} />;
-      case 'histori': 
-        return <History history={history} setHistory={setHistory} />;
-      case 'bot-intelligence': 
-        return <BotIntelligence aliases={aliases} setAliases={setAliases} />;
-      case 'respon':
-        return <Respon configs={configs} setConfigs={setConfigs} />;
-      case 'koneksi':
-        return <BotConnection settings={botSettings} setSettings={setBotSettings} configs={configs} employees={employees} aliases={aliases} onCloudSync={handleCloudSync} />;
-      case 'simulator': 
-        return <Simulator employees={employees} shifts={shifts} history={history} setHistory={setHistory} configs={configs} aliases={aliases} botSettings={botSettings} />;
-      case 'deployment':
-        return <Deployment />;
-      case 'pengaturan': 
-        return <Settings configs={configs} setConfigs={setConfigs} userEmail={userEmail} />;
-      default: 
-        return <Dashboard employees={employees} history={history} shifts={shifts} setHistory={setHistory} configs={configs} />;
-    }
   };
 
   if (!isAuthenticated) return <Login onLogin={handleLogin} />;
 
   return (
-    <div className="flex min-h-screen bg-[#f8f9fd] selection:bg-indigo-100 selection:text-indigo-900">
-      <Sidebar 
-        activePage={activePage} 
-        setActivePage={setActivePage} 
-        onLogout={handleLogout} 
-      />
+    <div className="flex min-h-screen bg-[#f8f9fd]">
+      <Sidebar activePage={activePage} setActivePage={setActivePage} onLogout={handleLogout} />
       <main className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden">
-        {showInstallBanner && (
-          <div className="mx-12 mt-6 animate-in slide-in-from-top-10 duration-700">
-             <div className="bg-gradient-to-r from-indigo-600 via-indigo-700 to-purple-700 p-1 rounded-[2.5rem] shadow-2xl shadow-indigo-500/30">
-                <div className="bg-slate-900/40 backdrop-blur-md rounded-[2.3rem] px-8 py-4 flex items-center justify-between">
-                   <div className="flex items-center gap-6">
-                      <div className="bg-white/10 p-3 rounded-2xl border border-white/10 text-white shadow-inner">
-                         <Sparkles size={24} className="animate-pulse" />
-                      </div>
-                      <div>
-                         <p className="text-[10px] font-black uppercase tracking-[0.2em] text-indigo-300">Zenith Enterprise</p>
-                         <h4 className="text-sm font-black text-white italic tracking-tight">Unduh aplikasi ke Desktop untuk performa 2x lebih cepat!</h4>
-                      </div>
-                   </div>
-                   <div className="flex items-center gap-4">
-                      <button 
-                        onClick={handleInstallClick}
-                        className="bg-white text-indigo-950 px-8 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:scale-105 active:scale-95 transition-all flex items-center gap-2 shadow-xl"
-                      >
-                        <Download size={14} /> INSTALL SEKARANG
-                      </button>
-                      <button 
-                        onClick={() => setShowInstallBanner(false)} 
-                        className="p-3 text-white/40 hover:text-white transition-colors"
-                      >
-                        <X size={20} />
-                      </button>
-                   </div>
+        
+        {/* Cloud Status Bar */}
+        <div className="bg-white px-12 py-4 border-b border-slate-200/60 flex justify-between items-center shadow-sm z-20">
+           <div className="flex items-center gap-4">
+              {syncStatus === 'syncing' ? (
+                <div className="flex items-center gap-2 text-indigo-500 animate-pulse">
+                   <Loader2 size={14} className="animate-spin" />
+                   <span className="text-[10px] font-black uppercase tracking-widest">Syncing Data...</span>
                 </div>
-             </div>
-          </div>
-        )}
-
-        <div className="bg-white px-12 py-4 border-b border-slate-200/60 flex justify-end items-center gap-6">
-           <div className="text-right">
-              <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none">Session Operator</p>
-              <p className="text-[11px] font-bold text-slate-700 mt-1.5">{userEmail}</p>
+              ) : syncStatus === 'synced' ? (
+                <div className="flex items-center gap-2 text-emerald-500">
+                   <ShieldCheck size={14} />
+                   <span className="text-[10px] font-black uppercase tracking-widest">Cloud Synced</span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 text-rose-500">
+                   <CloudOff size={14} />
+                   <span className="text-[10px] font-black uppercase tracking-widest">Offline / Sync Error</span>
+                </div>
+              )}
            </div>
-           <div className="w-10 h-10 bg-indigo-600 rounded-2xl flex items-center justify-center text-white text-xs font-black shadow-lg shadow-indigo-100 border border-white">
-              {userEmail.charAt(0).toUpperCase()}
+
+           <div className="flex items-center gap-6">
+              <div className="text-right">
+                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none">Logged as Account</p>
+                  <p className="text-[11px] font-bold text-slate-700 mt-1.5">{userEmail}</p>
+              </div>
+              <div className="w-10 h-10 bg-indigo-600 rounded-2xl flex items-center justify-center text-white text-xs font-black shadow-lg shadow-indigo-100 border-2 border-white">
+                  {userEmail.charAt(0).toUpperCase()}
+              </div>
            </div>
         </div>
-        <div className="flex-1 overflow-y-auto p-12 scroll-smooth">
-          <div className="max-w-[1400px] mx-auto h-full">
-            {renderPage()}
+
+        <div className="flex-1 overflow-y-auto p-12 custom-scrollbar">
+          <div className="max-w-[1400px] mx-auto">
+            {activePage === 'dashboard' && <Dashboard employees={employees} history={history} shifts={shifts} setHistory={setHistory} configs={configs} />}
+            {activePage === 'karyawan' && <Employees employees={employees} setEmployees={setEmployees} shifts={shifts} />}
+            {activePage === 'shift' && <Shifts shifts={shifts} setShifts={setShifts} employees={employees} setEmployees={setEmployees} setHistory={setHistory} />}
+            {activePage === 'histori' && <History history={history} setHistory={setHistory} />}
+            {activePage === 'bot-intelligence' && <BotIntelligence aliases={aliases} setAliases={setAliases} />}
+            {activePage === 'respon' && <Respon configs={configs} setConfigs={setConfigs} />}
+            {activePage === 'koneksi' && <BotConnection settings={botSettings} setSettings={setBotSettings} configs={configs} employees={employees} aliases={aliases} />}
+            {activePage === 'simulator' && <Simulator employees={employees} shifts={shifts} history={history} setHistory={setHistory} configs={configs} aliases={aliases} botSettings={botSettings} />}
+            {activePage === 'deployment' && <Deployment />}
+            {activePage === 'pengaturan' && <Settings configs={configs} setConfigs={setConfigs} userEmail={userEmail} />}
           </div>
           <footer className="mt-20 pt-8 border-t border-slate-200/50 pb-12 text-center text-slate-400 text-[10px] font-bold tracking-widest uppercase italic">
-            &copy; 2024 ZenithHR Management Suite • Enterprise Cloud Edition
+            &copy; 2024 Zenith Cloud Suite • Multi-Device Support Active
           </footer>
         </div>
       </main>
