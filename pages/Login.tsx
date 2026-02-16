@@ -24,6 +24,8 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
     setIsLoading(true);
 
     setTimeout(() => {
+      const emailKey = email.replace(/[@.]/g, '_');
+      
       if (mode === 'recovery') {
         if (!supabaseUrl || !supabaseKey) {
           setError('Mohon lengkapi Kunci Cloud Supabase Anda.');
@@ -31,18 +33,21 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
           return;
         }
 
-        // Simpan kunci secara lokal untuk sesi ini
-        const storageKey = `zenith_cloud_key_${email.replace(/[@.]/g, '_')}`;
-        localStorage.setItem(storageKey, JSON.stringify({ supabaseUrl, supabaseKey }));
+        // 1. Simpan Kunci Cloud
+        const cloudKey = `zenith_cloud_key_${emailKey}`;
+        localStorage.setItem(cloudKey, JSON.stringify({ supabaseUrl, supabaseKey }));
         
-        // Buat akun lokal otomatis agar bisa login biasa nanti
+        // 2. Registrasi Akun Lokal agar bisa login biasa nanti
         const accounts = JSON.parse(localStorage.getItem('zenith_accounts') || '[]');
         if (!accounts.find((a: any) => a.email === email)) {
           accounts.push({ email, password: 'cloud_user' });
           localStorage.setItem('zenith_accounts', JSON.stringify(accounts));
         }
         
+        // 3. Set Sesi Aktif
         localStorage.setItem('zenith_active_session', email);
+        
+        // 4. Masuk (Ini akan mentrigger pullEverything di App.tsx)
         onLogin(email);
         return;
       }
@@ -52,7 +57,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
       const user = accounts.find((a: any) => a.email === email && (a.password === password || a.password === 'cloud_user'));
       
       if (!user) {
-        setError('Akun tidak ditemukan di browser ini. Gunakan "Cloud Recovery" jika Anda baru pindah perangkat.');
+        setError('Akun tidak ditemukan. Gunakan "Cloud Recovery" untuk menarik data dari Supabase.');
         setIsLoading(false);
         return;
       }
@@ -73,7 +78,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
              <ShieldCheck className="text-white" size={32} />
           </div>
           <h1 className="text-4xl font-black text-white tracking-tighter italic uppercase">ZENITH<span className="text-indigo-500">BOT</span></h1>
-          <p className="text-[9px] text-indigo-400 font-black uppercase tracking-[0.3em]">Auto-Sync Intelligence Active</p>
+          <p className="text-[9px] text-indigo-400 font-black uppercase tracking-[0.3em]">Vault Protected Access</p>
         </div>
 
         <div className="bg-white/[0.03] border border-white/10 rounded-[3.5rem] backdrop-blur-3xl shadow-2xl overflow-hidden">
@@ -116,7 +121,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
                 <div className="space-y-4 animate-in slide-in-from-top-4">
                    <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-2xl">
                       <p className="text-[9px] text-amber-500 font-black uppercase leading-relaxed text-center">
-                        Masukkan Kunci Supabase Anda untuk memulihkan seluruh data dari cloud ke perangkat ini.
+                        GUNAKAN MODE INI UNTUK MENARIK DATA KE PERANGKAT BARU.
                       </p>
                    </div>
                    <div className="space-y-1">
@@ -137,13 +142,13 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
               disabled={isLoading} 
               className={`w-full ${mode === 'recovery' ? 'bg-amber-600 hover:bg-amber-500' : 'bg-indigo-600 hover:bg-indigo-500'} text-white font-black py-5 rounded-2xl uppercase text-xs tracking-widest shadow-2xl flex items-center justify-center gap-3 transition-all active:scale-95`}
             >
-              {isLoading ? <Loader2 className="animate-spin" /> : mode === 'recovery' ? 'PULIHKAN DATA CLOUD' : 'MASUK KE DASHBOARD'} <ArrowRight size={18} />
+              {isLoading ? <Loader2 className="animate-spin" /> : mode === 'recovery' ? 'PULIHKAN DATA DARI CLOUD' : 'LOGIN DASHBOARD'} <ArrowRight size={18} />
             </button>
           </form>
         </div>
         
         <p className="text-center text-[9px] text-slate-600 font-black uppercase tracking-[0.2em]">
-          Powered by Zenith Cloud Protocol v2.5
+          Zenith Global Sync Engine v2.5.1
         </p>
       </div>
     </div>
