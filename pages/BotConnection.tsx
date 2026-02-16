@@ -25,7 +25,7 @@ const BotConnection: React.FC<BotConnectionProps> = ({ settings, setSettings, co
   const [activeTab, setActiveTab] = useState<'setup' | 'supabase' | 'sql'>('setup');
   const [isSyncing, setIsSyncing] = useState(false);
 
-  // Deteksi AI Key dengan aman (Vite Define check)
+  // Deteksi AI Key dengan aman
   const isAiKeyDetected = (process.env.API_KEY && process.env.API_KEY !== "") ? true : false;
 
   useEffect(() => {
@@ -81,7 +81,7 @@ const BotConnection: React.FC<BotConnectionProps> = ({ settings, setSettings, co
            </div>
            <div>
               <h4 className="text-sm font-black text-rose-900 uppercase">Perhatian: API_KEY Belum Aktif</h4>
-              <p className="text-xs text-rose-700">Jika Anda sudah mengisi di Vercel, pastikan Anda sudah melakukan <b>REDEPLOY</b> pada project Anda.</p>
+              <p className="text-xs text-rose-700">Jika Anda sudah mengisi di Vercel, pastikan Anda sudah melakukan <b>REDEPLOY</b> pada project Anda agar perubahan terbaca.</p>
            </div>
         </div>
       )}
@@ -102,7 +102,7 @@ const BotConnection: React.FC<BotConnectionProps> = ({ settings, setSettings, co
                       type="text" 
                       value={localSettings?.botToken || ''}
                       onChange={e => setLocalSettings({...localSettings, botToken: e.target.value})}
-                      className="w-full bg-slate-50 px-6 py-4 rounded-2xl border-2 border-transparent focus:border-indigo-500/20 font-bold text-slate-700 text-sm transition-all"
+                      className="w-full bg-slate-50 px-6 py-4 rounded-2xl border-2 border-transparent focus:border-indigo-500/20 font-bold text-slate-700 text-sm transition-all shadow-inner"
                       placeholder="12345678:AAH-XYZ..."
                     />
                 </div>
@@ -112,7 +112,7 @@ const BotConnection: React.FC<BotConnectionProps> = ({ settings, setSettings, co
                       type="text" 
                       value={localSettings?.botUsername || ''}
                       onChange={e => setLocalSettings({...localSettings, botUsername: e.target.value})}
-                      className="w-full bg-slate-50 px-6 py-4 rounded-2xl border-2 border-transparent focus:border-indigo-500/20 font-bold text-slate-700 text-sm transition-all"
+                      className="w-full bg-slate-50 px-6 py-4 rounded-2xl border-2 border-transparent focus:border-indigo-500/20 font-bold text-slate-700 text-sm transition-all shadow-inner"
                       placeholder="@UsernameBot"
                     />
                 </div>
@@ -120,7 +120,7 @@ const BotConnection: React.FC<BotConnectionProps> = ({ settings, setSettings, co
           </div>
 
           {/* SUPABASE CONFIG */}
-          <div className="bg-[#0f172a] p-10 rounded-[3rem] text-white shadow-xl space-y-8">
+          <div className="bg-[#0f172a] p-10 rounded-[3rem] text-white shadow-xl space-y-8 border-b-8 border-indigo-500">
              <div className="flex items-center gap-3 border-b border-white/5 pb-6">
                 <Database className="text-indigo-400" size={24} />
                 <h3 className="text-lg font-black uppercase italic">Supabase Database</h3>
@@ -128,31 +128,31 @@ const BotConnection: React.FC<BotConnectionProps> = ({ settings, setSettings, co
              
              <div className="space-y-6">
                 <div className="space-y-3">
-                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Project URL (Wajib)</label>
+                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Project URL (Wajib Diisi)</label>
                   <input 
                       type="text" 
                       value={localSettings?.supabaseUrl || ''}
                       onChange={e => setLocalSettings({...localSettings, supabaseUrl: e.target.value})}
-                      className="w-full bg-white/5 border border-white/10 px-6 py-4 rounded-2xl font-bold text-white text-sm focus:border-indigo-500 outline-none"
-                      placeholder="https://xyz.supabase.co"
+                      className="w-full bg-white/5 border border-white/10 px-6 py-4 rounded-2xl font-bold text-white text-sm focus:border-indigo-500 outline-none transition-all"
+                      placeholder="https://xyzabc.supabase.co"
                     />
                 </div>
                 
                 <div className="space-y-3">
-                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Anon Key (Wajib)</label>
+                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Anon Public Key (Wajib Diisi)</label>
                   <input 
                       type="password" 
                       value={localSettings?.supabaseKey || ''}
                       onChange={e => setLocalSettings({...localSettings, supabaseKey: e.target.value})}
-                      className="w-full bg-white/5 border border-white/10 px-6 py-4 rounded-2xl font-bold text-white text-sm focus:border-indigo-500 outline-none"
-                      placeholder="eyJhbGciOiJIUz..."
+                      className="w-full bg-white/5 border border-white/10 px-6 py-4 rounded-2xl font-bold text-white text-sm focus:border-indigo-500 outline-none transition-all"
+                      placeholder="eyJhbGciOiJIUzI1Ni..."
                     />
                 </div>
 
                 <button 
                   onClick={() => handleSync('push')}
                   disabled={isSyncing || !localSettings.supabaseUrl}
-                  className="w-full bg-indigo-600 text-white py-5 rounded-2xl font-black text-[11px] tracking-widest flex items-center justify-center gap-3 hover:bg-indigo-700 transition-all uppercase disabled:opacity-50"
+                  className="w-full bg-indigo-600 text-white py-5 rounded-2xl font-black text-[11px] tracking-widest flex items-center justify-center gap-3 hover:bg-indigo-700 transition-all uppercase disabled:opacity-50 shadow-xl shadow-indigo-900/50"
                 >
                   {isSyncing ? <RefreshCw className="animate-spin" size={18} /> : <Cloud size={18} />}
                   PUSH DATA KE CLOUD
@@ -169,16 +169,16 @@ const BotConnection: React.FC<BotConnectionProps> = ({ settings, setSettings, co
                </div>
             </div>
 
-            <div className="flex-1 p-10 space-y-10">
+            <div className="flex-1 p-10 space-y-10 overflow-y-auto custom-scrollbar">
                <div className="bg-indigo-50 p-8 rounded-[2rem] border border-indigo-100 space-y-4">
                   <h4 className="text-sm font-black text-indigo-900 uppercase italic flex items-center gap-2">
                      <Rocket size={18} /> CARA AKTIFKAN AI GEMINI
                   </h4>
                   <p className="text-xs text-indigo-800/80 font-medium leading-relaxed">
-                     1. Masuk Vercel Dashboard > Settings > Environment Variables.<br/>
+                     1. Masuk Vercel Dashboard {" > "} Settings {" > "} Environment Variables.<br/>
                      2. Tambahkan variabel <b>API_KEY</b>.<br/>
                      3. Pergi ke tab <b>Deployments</b>, cari yang terbaru, klik <b>Redeploy</b>.<br/>
-                     4. Tanpa Redeploy, AI tidak akan pernah aktif.
+                     4. Tanpa Redeploy, AI tidak akan pernah aktif karena Vite membungkus kode saat build.
                   </p>
                </div>
 
@@ -187,9 +187,19 @@ const BotConnection: React.FC<BotConnectionProps> = ({ settings, setSettings, co
                      <Database size={18} /> CARA SET SUPABASE
                   </h4>
                   <p className="text-xs text-emerald-800/80 font-medium leading-relaxed">
-                     Buka dashboard Supabase > Project Settings > API. <br/>
+                     Buka dashboard Supabase {" > "} Project Settings {" > "} API. <br/>
                      Salin <b>Project URL</b> dan <b>anon public</b> key ke form di sebelah kiri. <br/>
                      Klik <b>Push Data</b> untuk mengirim daftar karyawan ke database cloud agar bot bisa membacanya.
+                  </p>
+               </div>
+               
+               <div className="bg-amber-50 p-8 rounded-[2rem] border border-amber-100 space-y-4">
+                  <h4 className="text-sm font-black text-amber-900 uppercase italic flex items-center gap-2">
+                     <Bot size={18} /> KONEKSI TELEGRAM
+                  </h4>
+                  <p className="text-xs text-amber-800/80 font-medium leading-relaxed">
+                     Dapatkan token dari <b>@BotFather</b> di Telegram. <br/>
+                     Panel ini hanya menyimpan identitas bot. Untuk menjalankan bot secara otomatis di server (backend), Anda perlu menghubungkan Webhook ke URL deployment Vercel Anda.
                   </p>
                </div>
             </div>
