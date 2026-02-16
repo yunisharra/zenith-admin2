@@ -9,13 +9,18 @@ interface BotContext {
   aliases: BotAlias[];
 }
 
-export const processBotLogic = async (userMessage: string, context: BotContext, senderUsername: string = "@raflyz") => {
+export const processBotLogicStream = async (
+  userMessage: string, 
+  context: BotContext, 
+  onChunk: (chunk: string) => void,
+  senderUsername: string = "@raflyz"
+) => {
   try {
-    // Pastikan API_KEY terbaca dari process.env (di-inject oleh Vite/Vercel)
     const apiKey = process.env.API_KEY;
     
     if (!apiKey || apiKey === "" || apiKey === "undefined") {
-      return "⚠️ API_KEY tidak terdeteksi. \n\n1. Pastikan sudah diisi di Vercel Env.\n2. LAKUKAN REDEPLOY di Vercel agar perubahan tersimpan.";
+      onChunk("⚠️ API_KEY tidak terdeteksi. Pastikan variabel bernama API_KEY sudah diisi di Vercel dan sudah melakukan REDEPLOY.");
+      return;
     }
 
     const ai = new GoogleGenAI({ apiKey });
@@ -31,22 +36,41 @@ export const processBotLogic = async (userMessage: string, context: BotContext, 
     const config = context.configs.find(c => c.type === identifiedCategory);
     const customTemplate = config?.responseTemplate || "Izin {kategori} diterima. ({durasi} menit)";
 
-    const systemPrompt = `
-      Anda adalah "Zenith Bot", asisten HR untuk perusahaan.
-      Jika user meminta izin, berikan jawaban sesuai template ini:
-      TEMPLATE: "${customTemplate}"
-      Ganti {durasi} dengan: ${config?.maxMinutes || 15}
-      Ganti {kategori} dengan: ${identifiedCategory || 'umum'}
+    const systemInstruction = `
+      Anda adalah "Zenith Bot", asisten HR perusahaan.
+      User saat ini: ${senderUsername}.
+      
+      MISI: Berikan izin jika pesan mengandung kata kunci izin. 
+      TEMPLATE WAJIB: "${customTemplate}"
+      DATA: Durasi=${config?.maxMinutes || 15}m, Kategori=${identifiedCategory || 'umum'}.
+      
+      Jika user tidak minta izin, jawab sangat singkat & profesional.
+      JANGAN bertele-tele. Jawab langsung to-the-point.
     `;
 
-    const response = await ai.models.generateContent({
+    const responseStream = await ai.models.generateContentStream({
       model: 'gemini-3-flash-preview',
-      contents: systemPrompt + `\nPesan User: "${userMessage}"`,
+      contents: userMessage,
+      config: {
+        systemInstruction,
+        thinkingConfig: { thinkingBudget: 0 }, // Matikan thinking agar respon instan
+        temperature: 0.5,
+      },
     });
 
-    return response.text || "Bot sedang sibuk.";
-  } catch (error) {
-    console.error("Gemini Error:", error);
-    return "❌ Eror Koneksi AI. Pastikan API Key di Vercel sudah benar dan lakukan Redeploy.";
+    let fullText = "";
+    for await (const chunk of responseStream) {
+      const text = chunk.text;
+      if (text) {
+        fullText += text;
+        onChunk(text);
+      }
+    }
+
+    return fullText;
+  } catch (error: any) {
+    console.error("Gemini Stream Error:", error);
+    onChunk("❌ Terjadi kesalahan koneksi AI. Mohon coba lagi.");
+    return "";
   }
 };
