@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Zenith Admin 2 - Next Gen</title>
+    <link rel="manifest" href="/manifest.json">
+    
+    <!-- PWA Meta Tags -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#0f172a">
+    <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/2092/2092663.png">
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <style>
+      body { 
+        font-family: 'Inter', sans-serif; 
+        background-color: #020617;
+        margin: 0;
+        overflow-x: hidden;
+      }
+      
+      @keyframes fadeOut {
+        0% { opacity: 1; }
+        90% { opacity: 1; }
+        100% { opacity: 0; visibility: hidden; pointer-events: none; }
+      }
+      
+      #splash {
+        position: fixed;
+        inset: 0;
+        background: #020617;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        z-index: 9999;
+        animation: fadeOut 1.5s forwards;
+      }
+
+      .custom-scrollbar::-webkit-scrollbar {
+        width: 6px;
+      }
+      .custom-scrollbar::-webkit-scrollbar-track {
+        background: rgba(15, 23, 42, 0.1);
+      }
+      .custom-scrollbar::-webkit-scrollbar-thumb {
+        background: rgba(99, 102, 241, 0.2);
+        border-radius: 10px;
+      }
+      .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+        background: rgba(99, 102, 241, 0.4);
+      }
+    </style>
+<link rel="stylesheet" href="/index.css">
+</head>
+  <body>
+    <!-- Splash Screen -->
+    <div id="splash">
+       <div style="padding: 2rem; background: linear-gradient(to bottom right, #6366f1, #a855f7); border-radius: 2rem; margin-bottom: 1.5rem; box-shadow: 0 20px 50px rgba(99, 102, 241, 0.3);">
+          <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/><path d="m9 12 2 2 4-4"/></svg>
+       </div>
+       <h1 style="color: white; font-weight: 900; font-style: italic; font-size: 1.5rem; letter-spacing: -0.05em; text-transform: uppercase; margin: 0;">ZENITH<span style="color: #6366f1;">BOT</span> 2</h1>
+       <p style="color: #475569; font-size: 0.7rem; font-weight: 800; letter-spacing: 0.3em; margin-top: 0.5rem; text-transform: uppercase;">Cloud Deployment System</p>
+    </div>
+
+    <!-- React Root -->
+    <div id="root"></div>
+
+    <!-- Vite Module Entry -->
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>

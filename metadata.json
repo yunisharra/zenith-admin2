@@ -1,0 +1,8 @@
+{
+  "name": "Zenith Bot Admin Panel",
+  "description": "A comprehensive web-based admin panel for managing Telegram bots, employee shifts, quota limits, and bot simulations.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
