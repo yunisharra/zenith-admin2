@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Sidebar from './components/Sidebar';
-import { PageType, Employee, Shift, LeaveHistory, BotAlias, LeaveConfig, BotSettings } from './types';
+import { PageType, Employee, Shift, LeaveHistory, BotAlias, LeaveConfig, BotSettings, Message } from './types';
 import Dashboard from './pages/Dashboard';
 import Employees from './pages/Employees';
 import Shifts from './pages/Shifts';
@@ -19,6 +19,7 @@ import {
   Database, AlertTriangle, ExternalLink, Copy, Check
 } from 'lucide-react';
 import { MOCK_BOT_ALIASES, MOCK_LEAVE_CONFIGS, MOCK_SHIFTS } from './constants';
+import { processBotLogicStream } from './services/geminiService';
 
 const App: React.FC = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(() => !!localStorage.getItem('zenith_active_session'));
@@ -39,6 +40,12 @@ const App: React.FC = () => {
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | null }>({ message: '', type: null });
   const [sqlCopied, setSqlCopied] = useState(false);
 
+  // Global Bridge State
+  const [isBridgeActive, setIsBridgeActive] = useState(() => localStorage.getItem('zenith_bridge_active') === 'true');
+  const [simulatorMessages, setSimulatorMessages] = useState<Message[]>([
+    { id: '1', sender: 'bot', text: 'Halo! Saya Zenith Bot. Sistem Bridge Global Aktif.', timestamp: new Date() }
+  ]);
+
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [shifts, setShifts] = useState<Shift[]>(MOCK_SHIFTS);
   const [history, setHistory] = useState<LeaveHistory[]>([]);
@@ -50,6 +57,7 @@ const App: React.FC = () => {
 
   const lastSyncHash = useRef<string>('');
   const hasInitialPullDone = useRef(false);
+  const lastUpdateId = useRef(0);
 
   const showToast = (message: string, type: 'success' | 'error') => {
     setToast({ message, type });
@@ -60,6 +68,54 @@ const App: React.FC = () => {
     if (!cloudCreds) return null;
     return createClient(cloudCreds.url, cloudCreds.key);
   }, [cloudCreds]);
+
+  // LIVE TELEGRAM BRIDGE ENGINE (GLOBAL)
+  useEffect(() => {
+    let interval: any;
+    if (isBridgeActive && botSettings.botToken && isAuthenticated) {
+      interval = setInterval(async () => {
+        try {
+          const res = await fetch(`https://api.telegram.org/bot${botSettings.botToken}/getUpdates?offset=${lastUpdateId.current + 1}&timeout=10`);
+          const data = await res.json();
+          if (data.ok && data.result.length > 0) {
+            for (const update of data.result) {
+              lastUpdateId.current = update.update_id;
+              if (update.message && update.message.text) {
+                const chatId = update.message.chat.id;
+                const userText = update.message.text;
+                const username = update.message.from.username ? `@${update.message.from.username}` : "Anonymous";
+                
+                // Tambahkan ke log simulator
+                const userLogId = `tg-${update.update_id}`;
+                setSimulatorMessages(prev => [...prev, { id: userLogId, sender: 'user', text: `[TG: ${username}] ${userText}`, timestamp: new Date() }]);
+                
+                // Proses lewat AI
+                let aiReply = "";
+                await processBotLogicStream(userText, { employees, shifts, history, configs, aliases }, (chunk) => { aiReply += chunk; }, username);
+                
+                // Kirim balik ke Telegram
+                await fetch(`https://api.telegram.org/bot${botSettings.botToken}/sendMessage`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ chat_id: chatId, text: aiReply })
+                });
+
+                setSimulatorMessages(prev => [...prev, { id: `ai-${update.update_id}`, sender: 'bot', text: aiReply, timestamp: new Date() }]);
+              }
+            }
+          }
+        } catch (e) {
+          console.error("Bridge Error:", e);
+        }
+      }, 3500); // Polling setiap 3.5 detik
+    }
+    return () => clearInterval(interval);
+  }, [isBridgeActive, botSettings.botToken, employees, shifts, history, configs, aliases, isAuthenticated]);
+
+  // Sync Bridge Toggle to LocalStorage
+  useEffect(() => {
+    localStorage.setItem('zenith_bridge_active', isBridgeActive.toString());
+  }, [isBridgeActive]);
 
   const pullEverything = useCallback(async (email: string) => {
     const supabase = getSupabase();
@@ -105,7 +161,7 @@ const App: React.FC = () => {
 
       const mappedConfigs: LeaveConfig[] = (cfgs || []).length > 0 ? cfgs.map((d: any) => ({
         type: d.type, maxMinutes: d.max_minutes, maxPerDay: d.max_per_day,
-        responseTemplate: d.response_template, warningTemplate: d.warning_template
+        responseTemplate: d.response_template, warning_template: d.warning_template
       })) : MOCK_LEAVE_CONFIGS;
 
       const mappedHistory: LeaveHistory[] = (hist || []).map((d: any) => ({
@@ -343,6 +399,11 @@ NOTIFY pgrst, 'reload schema';`;
            </div>
            
            <div className="flex items-center gap-6">
+              {isBridgeActive && (
+                <div className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-xl text-[9px] font-black uppercase tracking-widest animate-pulse">
+                   <RefreshCw size={12} className="animate-spin" /> Bridge Active
+                </div>
+              )}
               <button 
                 onClick={() => pushEverything(true)}
                 className="bg-[#0f172a] text-white px-8 py-3 rounded-2xl flex items-center gap-3 text-[10px] font-black uppercase tracking-widest hover:bg-black transition-all shadow-lg shadow-slate-200"
@@ -370,7 +431,7 @@ NOTIFY pgrst, 'reload schema';`;
             {activePage === 'bot-intelligence' && <BotIntelligence aliases={aliases} setAliases={setAliases} />}
             {activePage === 'respon' && <Respon configs={configs} setConfigs={setConfigs} />}
             {activePage === 'koneksi' && <BotConnection settings={{...botSettings, supabaseUrl: cloudCreds?.url, supabaseKey: cloudCreds?.key}} setSettings={setBotSettings} onForcePush={() => pushEverything(true)} onForcePull={() => pullEverything(userEmail)} configs={configs} employees={employees} aliases={aliases} />}
-            {activePage === 'simulator' && <Simulator employees={employees} shifts={shifts} history={history} setHistory={setHistory} configs={configs} aliases={aliases} botSettings={botSettings} />}
+            {activePage === 'simulator' && <Simulator employees={employees} shifts={shifts} history={history} setHistory={setHistory} configs={configs} aliases={aliases} botSettings={botSettings} messages={simulatorMessages} setMessages={setSimulatorMessages} isBridgeActive={isBridgeActive} setIsBridgeActive={setIsBridgeActive} />}
             {activePage === 'deployment' && <Deployment />}
             {activePage === 'pengaturan' && <Settings configs={configs} setConfigs={setConfigs} userEmail={userEmail} />}
           </div>
