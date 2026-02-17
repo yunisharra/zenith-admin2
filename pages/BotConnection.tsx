@@ -1,7 +1,7 @@
 
 import React, { useState } from 'react';
 import { 
-  Zap, ShieldCheck, RefreshCw, Database, Bot, Power, Wifi, UploadCloud, DownloadCloud, ArrowRight, ShieldAlert, CheckCircle, Code, Copy, Check
+  Zap, ShieldCheck, RefreshCw, Database, Bot, Power, Wifi, UploadCloud, DownloadCloud, ArrowRight, ShieldAlert, CheckCircle, Code, Copy, Check, Loader2
 } from 'lucide-react';
 import { BotSettings, LeaveConfig, Employee, BotAlias } from '../types';
 
@@ -19,6 +19,8 @@ const BotConnection: React.FC<BotConnectionProps> = ({ settings, setSettings, on
   const [localSettings, setLocalSettings] = useState(settings);
   const [testStatus, setTestStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [copied, setCopied] = useState(false);
+  const [isPushingLocal, setIsPushingLocal] = useState(false);
+  const [isPullingLocal, setIsPullingLocal] = useState(false);
 
   const sqlScript = `-- JALANKAN INI DI SQL EDITOR SUPABASE ANDA
 -- Agar data bisa tersimpan secara permanen
@@ -67,6 +69,18 @@ CREATE TABLE IF NOT EXISTS configs (
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const handlePush = () => {
+      setIsPushingLocal(true);
+      onForcePush();
+      setTimeout(() => setIsPushingLocal(false), 3000);
+  };
+
+  const handlePull = () => {
+      setIsPullingLocal(true);
+      onForcePull();
+      setTimeout(() => setIsPullingLocal(false), 3000);
+  };
+
   const testTelegramBot = async () => {
     if (!localSettings.botToken) return alert("Token Kosong!");
     setTestStatus('loading');
@@ -95,16 +109,20 @@ CREATE TABLE IF NOT EXISTS configs (
         </div>
         <div className="flex gap-4">
           <button 
-            onClick={onForcePull}
-            className="bg-white border-2 border-slate-100 text-slate-600 px-8 py-4 rounded-3xl text-[11px] font-black tracking-widest flex items-center gap-2 hover:bg-slate-50 transition-all shadow-sm"
+            onClick={handlePull}
+            disabled={isPullingLocal}
+            className="bg-white border-2 border-slate-100 text-slate-600 px-8 py-5 rounded-[2rem] text-[11px] font-black tracking-widest flex items-center gap-3 hover:bg-slate-50 transition-all shadow-sm disabled:opacity-50"
           >
-            <DownloadCloud size={16} /> TARIK DATA CLOUD
+            {isPullingLocal ? <Loader2 size={18} className="animate-spin" /> : <DownloadCloud size={18} />}
+            {isPullingLocal ? 'PULLING...' : 'TARIK DATA CLOUD'}
           </button>
           <button 
-            onClick={() => { setSettings(localSettings); onForcePush(); }} 
-            className="bg-indigo-600 text-white px-10 py-4 rounded-3xl text-[11px] font-black tracking-widest flex items-center gap-2 hover:bg-indigo-700 shadow-2xl shadow-indigo-500/40 transition-all"
+            onClick={handlePush}
+            disabled={isPushingLocal}
+            className="bg-indigo-600 text-white px-10 py-5 rounded-[2rem] text-[11px] font-black tracking-widest flex items-center gap-3 hover:bg-indigo-700 shadow-2xl shadow-indigo-500/40 transition-all disabled:opacity-50 active:scale-95"
           >
-            <UploadCloud size={18} /> PUSH SEKARANG
+            {isPushingLocal ? <Loader2 size={18} className="animate-spin" /> : <UploadCloud size={18} />}
+            {isPushingLocal ? 'PUSHING...' : 'PUSH SEKARANG'}
           </button>
         </div>
       </header>
@@ -123,7 +141,7 @@ CREATE TABLE IF NOT EXISTS configs (
                     <input 
                         type="text" value={localSettings.supabaseUrl}
                         onChange={e => setLocalSettings({...localSettings, supabaseUrl: e.target.value})}
-                        className="w-full bg-slate-50 px-6 py-5 rounded-2xl border-none font-bold text-slate-700 text-sm"
+                        className="w-full bg-slate-50 px-6 py-5 rounded-2xl border-none font-bold text-slate-700 text-sm focus:ring-2 focus:ring-indigo-500/20"
                         placeholder="https://xyz.supabase.co"
                       />
                   </div>
@@ -132,7 +150,7 @@ CREATE TABLE IF NOT EXISTS configs (
                     <input 
                         type="password" value={localSettings.supabaseKey}
                         onChange={e => setLocalSettings({...localSettings, supabaseKey: e.target.value})}
-                        className="w-full bg-slate-50 px-6 py-5 rounded-2xl border-none font-bold text-slate-700 text-sm"
+                        className="w-full bg-slate-50 px-6 py-5 rounded-2xl border-none font-bold text-slate-700 text-sm focus:ring-2 focus:ring-indigo-500/20"
                         placeholder="eyJhbG..."
                       />
                   </div>
@@ -150,18 +168,19 @@ CREATE TABLE IF NOT EXISTS configs (
                     <input 
                         type="password" value={localSettings.botToken}
                         onChange={e => setLocalSettings({...localSettings, botToken: e.target.value})}
-                        className="w-full bg-slate-50 px-6 py-5 rounded-2xl border-none font-bold text-slate-700 text-sm"
+                        className="w-full bg-slate-50 px-6 py-5 rounded-2xl border-none font-bold text-slate-700 text-sm focus:ring-2 focus:ring-indigo-500/20"
                         placeholder="123456:ABC..."
                       />
                   </div>
-                  <button onClick={testTelegramBot} className="w-full bg-slate-900 text-white py-4 rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-black transition-all">
+                  <button onClick={testTelegramBot} className="w-full bg-slate-900 text-white py-5 rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-black transition-all flex items-center justify-center gap-2">
+                     {testStatus === 'loading' ? <Loader2 size={16} className="animate-spin" /> : <Bot size={16} />}
                      {testStatus === 'loading' ? 'Mengecek...' : 'Test & Verifikasi Koneksi'}
                   </button>
                </div>
             </div>
         </div>
 
-        {/* Kolom Kanan: SQL Helper (WAJIB) */}
+        {/* Kolom Kanan: SQL Helper */}
         <div className="lg:col-span-5 bg-[#0f172a] p-10 rounded-[3rem] text-white shadow-xl flex flex-col gap-8 border-b-8 border-amber-500">
            <div className="flex items-center gap-3 border-b border-white/5 pb-6">
               <Code className="text-amber-400" size={24} />
@@ -172,7 +191,7 @@ CREATE TABLE IF NOT EXISTS configs (
              Jika data tidak tersimpan ke Cloud, pastikan Anda sudah menjalankan script SQL ini di dashboard Supabase Anda (Menu SQL Editor).
            </p>
 
-           <div className="relative bg-black/40 rounded-2xl p-6 font-mono text-[10px] text-indigo-300 leading-relaxed overflow-x-auto">
+           <div className="relative bg-black/40 rounded-2xl p-6 font-mono text-[10px] text-indigo-300 leading-relaxed overflow-x-auto max-h-[300px] custom-scrollbar">
               <pre>{sqlScript}</pre>
               <button 
                 onClick={copySql}
