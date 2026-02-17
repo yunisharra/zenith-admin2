@@ -1,7 +1,7 @@
 
 import React, { useState } from 'react';
 import { 
-  Zap, ShieldCheck, RefreshCw, Database, Bot, Power, Wifi, UploadCloud, DownloadCloud, ArrowRight, ShieldAlert, CheckCircle, Code, Copy, Check, Loader2
+  Zap, ShieldCheck, RefreshCw, Database, Bot, Power, Wifi, UploadCloud, DownloadCloud, ArrowRight, ShieldAlert, CheckCircle, Code, Copy, Check, Loader2, Info
 } from 'lucide-react';
 import { BotSettings, LeaveConfig, Employee, BotAlias } from '../types';
 
@@ -19,8 +19,6 @@ const BotConnection: React.FC<BotConnectionProps> = ({ settings, setSettings, on
   const [localSettings, setLocalSettings] = useState(settings);
   const [testStatus, setTestStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [copied, setCopied] = useState(false);
-  const [isPushingLocal, setIsPushingLocal] = useState(false);
-  const [isPullingLocal, setIsPullingLocal] = useState(false);
 
   const sqlScript = `-- JALANKAN INI DI SQL EDITOR SUPABASE ANDA
 -- Agar data bisa tersimpan secara permanen
@@ -69,18 +67,6 @@ CREATE TABLE IF NOT EXISTS configs (
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handlePush = () => {
-      setIsPushingLocal(true);
-      onForcePush();
-      setTimeout(() => setIsPushingLocal(false), 3000);
-  };
-
-  const handlePull = () => {
-      setIsPullingLocal(true);
-      onForcePull();
-      setTimeout(() => setIsPullingLocal(false), 3000);
-  };
-
   const testTelegramBot = async () => {
     if (!localSettings.botToken) return alert("Token Kosong!");
     setTestStatus('loading');
@@ -103,29 +89,25 @@ CREATE TABLE IF NOT EXISTS configs (
       <header className="flex flex-col lg:flex-row justify-between items-start lg:items-end gap-6">
         <div>
           <h1 className="text-4xl font-black text-[#0f172a] tracking-tighter italic uppercase flex items-center gap-3">
-             Server Cloud <Wifi className="text-indigo-600" size={32} />
+             Pusat Sinkronisasi <Database className="text-indigo-600" size={32} />
           </h1>
-          <p className="text-[11px] font-bold text-slate-400 tracking-widest uppercase mt-1">Status Sinkronisasi & Konfigurasi Supabase</p>
-        </div>
-        <div className="flex gap-4">
-          <button 
-            onClick={handlePull}
-            disabled={isPullingLocal}
-            className="bg-white border-2 border-slate-100 text-slate-600 px-8 py-5 rounded-[2rem] text-[11px] font-black tracking-widest flex items-center gap-3 hover:bg-slate-50 transition-all shadow-sm disabled:opacity-50"
-          >
-            {isPullingLocal ? <Loader2 size={18} className="animate-spin" /> : <DownloadCloud size={18} />}
-            {isPullingLocal ? 'PULLING...' : 'TARIK DATA CLOUD'}
-          </button>
-          <button 
-            onClick={handlePush}
-            disabled={isPushingLocal}
-            className="bg-indigo-600 text-white px-10 py-5 rounded-[2rem] text-[11px] font-black tracking-widest flex items-center gap-3 hover:bg-indigo-700 shadow-2xl shadow-indigo-500/40 transition-all disabled:opacity-50 active:scale-95"
-          >
-            {isPushingLocal ? <Loader2 size={18} className="animate-spin" /> : <UploadCloud size={18} />}
-            {isPushingLocal ? 'PUSHING...' : 'PUSH SEKARANG'}
-          </button>
+          <p className="text-[11px] font-bold text-slate-400 tracking-widest uppercase mt-1">Kelola Seluruh Database Cloud Anda</p>
         </div>
       </header>
+
+      {/* SYNC INFO BOX */}
+      <div className="bg-indigo-600 p-10 rounded-[3rem] text-white flex flex-col md:flex-row items-center gap-10 shadow-2xl relative overflow-hidden">
+         <div className="absolute top-0 right-0 p-12 opacity-10 rotate-12"><UploadCloud size={160} /></div>
+         <div className="w-20 h-20 bg-white/10 rounded-3xl flex items-center justify-center shrink-0 border border-white/20 shadow-inner">
+            <Info size={36} />
+         </div>
+         <div className="space-y-2 relative z-10">
+            <h3 className="text-2xl font-black italic uppercase tracking-tighter">Sinkronisasi Global</h3>
+            <p className="text-sm font-medium text-indigo-100 max-w-2xl leading-relaxed">
+              Tombol "Push Database" di atas akan menyimpan **SELURUH DATA** (Daftar Karyawan, Jam Shift, dan Pengaturan Bot) ke Cloud Supabase Anda sekaligus. Gunakan ini sebelum menutup browser atau saat ingin pindah perangkat.
+            </p>
+         </div>
+      </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
         {/* Kolom Kiri: Config Form */}
@@ -154,6 +136,12 @@ CREATE TABLE IF NOT EXISTS configs (
                         placeholder="eyJhbG..."
                       />
                   </div>
+                  <button 
+                    onClick={() => setSettings(localSettings)}
+                    className="w-full bg-indigo-50 text-indigo-600 py-4 rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-indigo-600 hover:text-white transition-all border border-indigo-100"
+                  >
+                    Simpan Konfigurasi Key
+                  </button>
                </div>
             </div>
 
