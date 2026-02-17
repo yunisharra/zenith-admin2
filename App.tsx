@@ -69,7 +69,7 @@ const App: React.FC = () => {
     return createClient(cloudCreds.url, cloudCreds.key);
   }, [cloudCreds]);
 
-  // LIVE TELEGRAM BRIDGE ENGINE (GLOBAL)
+  // LIVE TELEGRAM BRIDGE ENGINE (GLOBAL + AUTO LOGGING)
   useEffect(() => {
     let interval: any;
     if (isBridgeActive && botSettings.botToken && isAuthenticated) {
@@ -82,18 +82,70 @@ const App: React.FC = () => {
               lastUpdateId.current = update.update_id;
               if (update.message && update.message.text) {
                 const chatId = update.message.chat.id;
-                const userText = update.message.text;
+                const userTextRaw = update.message.text;
+                const userText = userTextRaw.toLowerCase();
                 const username = update.message.from.username ? `@${update.message.from.username}` : "Anonymous";
                 
-                // Tambahkan ke log simulator
-                const userLogId = `tg-${update.update_id}`;
-                setSimulatorMessages(prev => [...prev, { id: userLogId, sender: 'user', text: `[TG: ${username}] ${userText}`, timestamp: new Date() }]);
+                // 1. Identifikasi Karyawan
+                const employee = employees.find(e => e.username.toLowerCase() === username.toLowerCase());
                 
-                // Proses lewat AI
+                // 2. Identifikasi Kategori Izin
+                let categoryFound: any = null;
+                for (const alias of aliases) {
+                  if (alias.keywords.some(k => userText.includes(k.toLowerCase()))) {
+                    categoryFound = alias.category;
+                    break;
+                  }
+                }
+
+                // Logika "Masuk" atau "Kembali"
+                const isReturning = userText.includes("masuk") || userText.includes("kembali") || userText.includes("done") || userText.includes("sudah");
+
+                // 3. Proses Recording jika karyawan terdaftar
+                if (employee) {
+                  const now = new Date();
+                  const timeStr = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
+                  const dateStr = now.toISOString().split('T')[0];
+
+                  if (isReturning) {
+                    // Cari izin terakhir yang sedang berjalan (timeIn === '--')
+                    const lastIzin = history.find(h => h.employeeName === employee.name && h.timeIn === '--');
+                    if (lastIzin) {
+                      const config = configs.find(c => c.type === lastIzin.type);
+                      const [hOut, mOut] = lastIzin.timeOut.split(':').map(Number);
+                      const duration = (now.getHours() * 60 + now.getMinutes()) - (hOut * 60 + mOut);
+                      const isLate = config ? duration > config.maxMinutes : false;
+
+                      setHistory(prev => prev.map(h => h.id === lastIzin.id ? {
+                        ...h, timeIn: timeStr, status: isLate ? 'Telat' : 'Tepat'
+                      } : h));
+                    }
+                  } else if (categoryFound) {
+                    // Buat izin baru jika belum ada izin yang berjalan
+                    const alreadyOut = history.some(h => h.employeeName === employee.name && h.timeIn === '--');
+                    if (!alreadyOut) {
+                      const newLog: LeaveHistory = {
+                        id: `tg-${update.update_id}`,
+                        employeeName: employee.name,
+                        type: categoryFound,
+                        timeOut: timeStr,
+                        timeIn: '--',
+                        date: dateStr,
+                        status: 'Tepat'
+                      };
+                      setHistory(prev => [newLog, ...prev]);
+                    }
+                  }
+                }
+
+                // 4. Tambahkan ke log simulator
+                setSimulatorMessages(prev => [...prev, { id: `tg-${update.update_id}`, sender: 'user', text: `[TG: ${username}] ${userTextRaw}`, timestamp: new Date() }]);
+                
+                // 5. Proses lewat AI untuk balasan teks
                 let aiReply = "";
-                await processBotLogicStream(userText, { employees, shifts, history, configs, aliases }, (chunk) => { aiReply += chunk; }, username);
+                await processBotLogicStream(userTextRaw, { employees, shifts, history, configs, aliases }, (chunk) => { aiReply += chunk; }, username);
                 
-                // Kirim balik ke Telegram
+                // 6. Kirim balik ke Telegram
                 await fetch(`https://api.telegram.org/bot${botSettings.botToken}/sendMessage`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
@@ -107,7 +159,7 @@ const App: React.FC = () => {
         } catch (e) {
           console.error("Bridge Error:", e);
         }
-      }, 3500); // Polling setiap 3.5 detik
+      }, 3500); 
     }
     return () => clearInterval(interval);
   }, [isBridgeActive, botSettings.botToken, employees, shifts, history, configs, aliases, isAuthenticated]);
