@@ -17,7 +17,7 @@ import { createClient } from '@supabase/supabase-js';
 import { 
   ShieldCheck, RefreshCw, AlertTriangle, Cloud, Loader2, 
   DatabaseZap, CheckCircle2, XCircle, UploadCloud, DownloadCloud, 
-  Database, Zap, Lock, WifiOff, ServerCrash
+  Database, Zap, Lock, WifiOff, ServerCrash, ZapOff
 } from 'lucide-react';
 import { MOCK_BOT_ALIASES, MOCK_LEAVE_CONFIGS, MOCK_SHIFTS } from './constants';
 
@@ -28,13 +28,12 @@ const App: React.FC = () => {
   
   const [isSyncing, setIsSyncing] = useState(false);
   const [isAppReady, setIsAppReady] = useState(false);
-  const [syncError, setSyncError] = useState<string | null>(null);
-  const [syncStep, setSyncStep] = useState('');
   const [syncStatus, setSyncStatus] = useState<'synced' | 'syncing' | 'error'>('synced');
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | null }>({ message: '', type: null });
   
   const hasInitialPullDone = useRef(false);
   const lastSyncHash = useRef<string>('');
+  const supabaseInstance = useRef<any>(null);
 
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [shifts, setShifts] = useState<Shift[]>(MOCK_SHIFTS);
@@ -46,168 +45,84 @@ const App: React.FC = () => {
     const email = localStorage.getItem('zenith_active_session') || '';
     const emailKey = email.replace(/[@.]/g, '_');
     const saved = localStorage.getItem(`zenith_bot_settings_${emailKey}`);
-    const cloudUrl = localStorage.getItem(`zenith_cloud_url_${emailKey}`);
-    const cloudKey = localStorage.getItem(`zenith_cloud_key_${emailKey}`);
     return saved ? JSON.parse(saved) : {
       botToken: '', groupId: '', botUsername: '@ZenithBot', isOnline: false, serverUrl: '', 
-      supabaseUrl: cloudUrl || '', supabaseKey: cloudKey || ''
+      supabaseUrl: localStorage.getItem(`zenith_cloud_url_${emailKey}`) || '', 
+      supabaseKey: localStorage.getItem(`zenith_cloud_key_${emailKey}`) || ''
     };
   });
 
-  const showToast = (message: string, type: 'success' | 'error') => {
-    setToast({ message, type });
-    setTimeout(() => setToast({ message: '', type: null }), 3000);
-  };
-
   const getSupabase = useCallback(() => {
+    if (supabaseInstance.current) return supabaseInstance.current;
     const emailKey = userEmail.replace(/[@.]/g, '_');
     const sUrl = localStorage.getItem(`zenith_cloud_url_${emailKey}`) || botSettings.supabaseUrl;
     const sKey = localStorage.getItem(`zenith_cloud_key_${emailKey}`) || botSettings.supabaseKey;
     if (!sUrl || !sKey) return null;
-    return createClient(sUrl, sKey);
-  }, [botSettings.supabaseUrl, botSettings.supabaseKey, userEmail]);
+    supabaseInstance.current = createClient(sUrl, sKey);
+    return supabaseInstance.current;
+  }, [userEmail, botSettings.supabaseUrl, botSettings.supabaseKey]);
 
-  // --- OPTIMIZED: PARALLEL PULL ---
+  // --- TURBO PULL (Background Mode) ---
   const pullEverything = useCallback(async (email: string) => {
     const supabase = getSupabase();
-    if (!supabase) {
-      setIsAuthenticated(false);
-      localStorage.removeItem('zenith_active_session');
-      return;
-    }
+    if (!supabase) return;
 
     setIsSyncing(true);
-    setSyncError(null);
     setSyncStatus('syncing');
-    setSyncStep('Fast Syncing...');
 
     try {
-      // Menjalankan semua request sekaligus (Paralel)
-      const [profRes, empRes, shftRes, cfgsRes] = await Promise.all([
+      // Menggunakan allSettled agar tidak "hang" jika ada satu tabel yang bermasalah
+      const results = await Promise.allSettled([
         supabase.from('profiles').select('*').eq('email', email).maybeSingle(),
         supabase.from('employees').select('*').eq('owner_email', email),
         supabase.from('shifts').select('*').eq('owner_email', email),
         supabase.from('configs').select('*').eq('owner_email', email)
       ]);
 
-      if (profRes.error) throw profRes.error;
-      if (empRes.error) throw empRes.error;
-      if (shftRes.error) throw shftRes.error;
-      if (cfgsRes.error) throw cfgsRes.error;
+      results.forEach((res, index) => {
+        if (res.status === 'fulfilled' && !res.value.error) {
+          const data = res.value.data;
+          if (!data) return;
 
-      // Update States secara instan
-      if (profRes.data) {
-        setBotSettings(prev => ({
-          ...prev,
-          botToken: profRes.data.bot_token || prev.botToken,
-          botUsername: profRes.data.bot_username || prev.botUsername,
-        }));
-      }
-
-      if (empRes.data) {
-        setEmployees(empRes.data.map((d: any) => ({
-          id: d.id, name: d.name, username: d.username, telegramId: d.telegram_id,
-          role: d.role, shiftId: d.shift_id, status: d.status
-        })));
-      }
-
-      if (shftRes.data && shftRes.data.length > 0) {
-        setShifts(shftRes.data.map((d: any) => ({
-          id: d.id, name: d.name, startTime: d.start_time, endTime: d.end_time,
-          category: d.category, description: d.description
-        })));
-      }
-
-      if (cfgsRes.data && cfgsRes.data.length > 0) {
-        setConfigs(cfgsRes.data.map((d: any) => ({
-          type: d.type, maxMinutes: d.max_minutes, maxPerDay: d.max_per_day,
-          responseTemplate: d.response_template, warningTemplate: d.warning_template
-        })));
-      }
+          if (index === 0) setBotSettings(p => ({...p, botToken: data.bot_token || p.botToken, botUsername: data.bot_username || p.botUsername}));
+          if (index === 1) setEmployees(data.map((d: any) => ({id: d.id, name: d.name, username: d.username, telegramId: d.telegram_id, role: d.role, shiftId: d.shift_id, status: d.status})));
+          if (index === 2 && data.length > 0) setShifts(data.map((d: any) => ({id: d.id, name: d.name, startTime: d.start_time, endTime: d.end_time, category: d.category, description: d.description})));
+          if (index === 3 && data.length > 0) setConfigs(data.map((d: any) => ({type: d.type, maxMinutes: d.max_minutes, maxPerDay: d.max_per_day, responseTemplate: d.response_template, warningTemplate: d.warning_template})));
+        }
+      });
 
       setSyncStatus('synced');
-      lastSyncHash.current = JSON.stringify({ 
-        employees: empRes.data || [], 
-        shifts: shftRes.data || [], 
-        configs: cfgsRes.data || [] 
-      });
       hasInitialPullDone.current = true;
-      
-      // Langsung buka aplikasi, tanpa setTimeout
       setIsSyncing(false);
-      setIsAppReady(true);
-    } catch (err: any) {
-      console.error("Critical Pull Error:", err);
+      setIsAppReady(true); // Memastikan Dashboard terbuka
+    } catch (e) {
       setSyncStatus('error');
-      setSyncError(err.message || "Koneksi Cloud Terputus.");
       setIsSyncing(false);
+      setIsAppReady(true); // Tetap buka app meski sync background error
     }
   }, [getSupabase]);
 
-  const pushEverything = useCallback(async (isManual = false) => {
-    const supabase = getSupabase();
-    if (!supabase) return;
-    if (isManual) { setIsSyncing(true); setSyncStep('Cloud Saving...'); }
-    setSyncStatus('syncing');
-
-    try {
-      const emailKey = userEmail.replace(/[@.]/g, '_');
-      await Promise.all([
-        supabase.from('profiles').upsert({
-          email: userEmail, bot_token: botSettings.botToken, bot_username: botSettings.botUsername, updated_at: new Date().toISOString()
-        }, { onConflict: 'email' }),
-        employees.length > 0 ? supabase.from('employees').upsert(employees.map(e => ({
-          id: e.id, name: e.name, username: e.username, telegram_id: e.telegramId,
-          role: e.role, shift_id: e.shiftId, status: e.status, owner_email: userEmail
-        })), { onConflict: 'id' }) : Promise.resolve(),
-        shifts.length > 0 ? supabase.from('shifts').upsert(shifts.map(s => ({
-          id: s.id, name: s.name, start_time: s.startTime, end_time: s.endTime,
-          category: s.category, description: s.description, owner_email: userEmail
-        })), { onConflict: 'id' }) : Promise.resolve(),
-        configs.length > 0 ? supabase.from('configs').upsert(configs.map(c => ({
-          type: c.type, max_minutes: c.maxMinutes, max_per_day: c.maxPerDay,
-          response_template: c.responseTemplate, warning_template: c.warningTemplate, owner_email: userEmail
-        })), { onConflict: 'type,owner_email' }) : Promise.resolve()
-      ]);
-
-      setSyncStatus('synced');
-      lastSyncHash.current = JSON.stringify({ employees, shifts, configs });
-      localStorage.setItem(`zenith_bot_settings_${emailKey}`, JSON.stringify(botSettings));
-      if (isManual) { showToast("Saved to Cloud!", "success"); setIsSyncing(false); }
-    } catch (err) {
-      setSyncStatus('error');
-      if (isManual) setIsSyncing(false);
-    }
-  }, [getSupabase, employees, shifts, configs, botSettings, userEmail]);
-
-  useEffect(() => {
-    if (!isAuthenticated || !hasInitialPullDone.current || !isAppReady) return;
-    const currentHash = JSON.stringify({ employees, shifts, configs });
-    if (currentHash === lastSyncHash.current) return;
-    const timeout = setTimeout(() => pushEverything(false), 3000);
-    return () => clearTimeout(timeout);
-  }, [employees, shifts, configs, isAuthenticated, isAppReady, pushEverything]);
-
-  useEffect(() => {
-    if (isAuthenticated && !hasInitialPullDone.current) pullEverything(userEmail);
-  }, [isAuthenticated, userEmail, pullEverything]);
-
   const handleLogin = (email: string, url?: string, key?: string) => {
     const emailKey = email.replace(/[@.]/g, '_');
-    setUserEmail(email);
-    setIsAuthenticated(true);
     localStorage.setItem('zenith_active_session', email);
     if (url && key) {
       localStorage.setItem(`zenith_cloud_url_${emailKey}`, url);
       localStorage.setItem(`zenith_cloud_key_${emailKey}`, key);
-      const knownUsers = JSON.parse(localStorage.getItem('zenith_known_users') || '[]');
-      if (!knownUsers.includes(email)) {
-        knownUsers.push(email);
-        localStorage.setItem('zenith_known_users', JSON.stringify(knownUsers));
-      }
+      const known = JSON.parse(localStorage.getItem('zenith_known_users') || '[]');
+      if (!known.includes(email)) localStorage.setItem('zenith_known_users', JSON.stringify([...known, email]));
     }
-    pullEverything(email);
+    setUserEmail(email);
+    setIsAuthenticated(true);
+    setIsAppReady(true); // INSTANT ENTRY
+    pullEverything(email); // Jalankan sync di background
   };
+
+  useEffect(() => {
+    if (isAuthenticated && !hasInitialPullDone.current) {
+      setIsAppReady(true); 
+      pullEverything(userEmail);
+    }
+  }, [isAuthenticated, userEmail, pullEverything]);
 
   const handleLogout = () => {
     localStorage.removeItem('zenith_active_session');
@@ -217,66 +132,32 @@ const App: React.FC = () => {
 
   if (!isAuthenticated) return <Login onLogin={handleLogin} />;
   
-  if (!isAppReady) {
-    return (
-      <div className="fixed inset-0 bg-[#020617] flex flex-col items-center justify-center p-8 z-[9999]">
-         <div className="bg-white/5 p-16 md:p-24 rounded-[4rem] border border-white/10 flex flex-col items-center gap-10 max-w-xl w-full backdrop-blur-3xl shadow-2xl text-center">
-            {syncStatus === 'error' ? (
-              <>
-                <div className="w-32 h-32 bg-rose-500/20 rounded-[3rem] flex items-center justify-center border border-rose-500/40">
-                  <ServerCrash size={56} className="text-rose-500 animate-bounce" />
-                </div>
-                <div className="space-y-4">
-                  <h3 className="text-3xl font-black text-white uppercase italic">Koneksi Gagal</h3>
-                  <button onClick={() => pullEverything(userEmail)} className="w-full bg-rose-600 text-white font-black py-5 rounded-2xl flex items-center justify-center gap-3 uppercase text-[10px] tracking-widest">
-                    <RefreshCw size={16} /> Coba Ulang
-                  </button>
-                  <button onClick={handleLogout} className="w-full text-slate-400 text-[10px] uppercase font-black">Keluar</button>
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="relative">
-                   <div className="absolute inset-0 bg-indigo-500 rounded-full animate-ping opacity-20" />
-                   <div className="relative w-24 h-24 bg-gradient-to-br from-indigo-500 to-indigo-800 rounded-[2rem] flex items-center justify-center shadow-2xl border border-white/10">
-                      <DatabaseZap size={40} className="text-white animate-pulse" />
-                   </div>
-                </div>
-                <div className="space-y-3">
-                   <h3 className="text-2xl font-black text-white uppercase italic tracking-tighter">Memuat Data...</h3>
-                   <p className="text-[10px] font-black text-indigo-400 uppercase tracking-[0.4em] animate-pulse">Zenith Engine v4.9</p>
-                </div>
-              </>
-            )}
-         </div>
-      </div>
-    );
-  }
-
   return (
-    <div className="flex min-h-screen bg-[#f8f9fd] font-sans">
+    <div className="flex min-h-screen bg-[#f8f9fd] font-sans transition-opacity duration-300">
       <Sidebar activePage={activePage} setActivePage={setActivePage} onLogout={handleLogout} />
       <main className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden relative">
-        {toast.type && (
-          <div className="fixed top-28 right-12 z-[1000] animate-in slide-in-from-right-10">
-             <div className={`px-8 py-5 rounded-[2.5rem] shadow-2xl flex items-center gap-4 border ${toast.type === 'success' ? 'bg-emerald-600' : 'bg-rose-600'} text-white`}>
-                <CheckCircle2 size={24} /> <p className="text-xs font-black italic uppercase tracking-widest">{toast.message}</p>
-             </div>
+        
+        {/* Sync Indicator - Kecil & Elegan */}
+        {isSyncing && (
+          <div className="fixed bottom-8 right-8 z-[9999] bg-slate-900 text-white px-6 py-3 rounded-2xl shadow-2xl flex items-center gap-3 animate-in fade-in slide-in-from-bottom-4">
+             <RefreshCw size={14} className="animate-spin text-indigo-400" />
+             <span className="text-[10px] font-black uppercase tracking-widest">Updating Cloud Data...</span>
           </div>
         )}
-        <div className="bg-white px-12 py-5 border-b border-slate-200/60 flex justify-between items-center shadow-sm z-20">
-           <div className={`flex items-center gap-3 px-5 py-2.5 rounded-2xl border transition-all ${syncStatus === 'syncing' ? 'bg-indigo-50 text-indigo-500' : 'bg-emerald-50 text-emerald-600'}`}>
+
+        <div className="bg-white px-12 py-5 border-b border-slate-200/60 flex justify-between items-center z-20">
+           <div className={`flex items-center gap-3 px-5 py-2.5 rounded-2xl border ${syncStatus === 'syncing' ? 'bg-indigo-50 text-indigo-500' : 'bg-emerald-50 text-emerald-600'}`}>
               <Database size={14} /> <span className="text-[10px] font-black uppercase tracking-widest">{syncStatus === 'syncing' ? 'SYNCING...' : 'CLOUD READY'}</span>
            </div>
-           <div className="flex items-center gap-4">
-              <button onClick={() => pullEverything(userEmail)} className="p-3 text-slate-500 hover:text-indigo-600 flex items-center gap-2 text-[9px] font-black uppercase tracking-widest"><DownloadCloud size={16} /> Refresh</button>
-              <button onClick={() => pushEverything(true)} className="p-3 bg-[#0f172a] text-white rounded-xl flex items-center gap-2 text-[9px] font-black uppercase hover:bg-black"><UploadCloud size={16} /> Push</button>
-              <div className="flex items-center gap-4 pl-6 border-l border-slate-100">
-                 <div className="text-right"><p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none">Admin</p><p className="text-[12px] font-bold text-slate-800 mt-1.5">{userEmail}</p></div>
-                 <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center text-white text-sm font-black">{userEmail.charAt(0).toUpperCase()}</div>
+           <div className="flex items-center gap-6">
+              <button onClick={() => pullEverything(userEmail)} className="text-slate-400 hover:text-indigo-600 flex items-center gap-2 text-[9px] font-black uppercase tracking-widest transition-colors"><RefreshCw size={14} /> Force Sync</button>
+              <div className="flex items-center gap-4 pl-6 border-l border-slate-100 text-right">
+                 <div><p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Admin</p><p className="text-[12px] font-bold text-slate-800">{userEmail}</p></div>
+                 <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center text-white text-sm font-black shadow-lg shadow-indigo-200">{userEmail.charAt(0).toUpperCase()}</div>
               </div>
            </div>
         </div>
+
         <div className="flex-1 overflow-y-auto p-12 custom-scrollbar">
           <div className="max-w-[1500px] mx-auto">
             {activePage === 'dashboard' && <Dashboard employees={employees} history={history} shifts={shifts} setHistory={setHistory} configs={configs} />}
@@ -285,7 +166,7 @@ const App: React.FC = () => {
             {activePage === 'histori' && <History history={history} setHistory={setHistory} />}
             {activePage === 'bot-intelligence' && <BotIntelligence aliases={aliases} setAliases={setAliases} />}
             {activePage === 'respon' && <Respon configs={configs} setConfigs={setConfigs} />}
-            {activePage === 'koneksi' && <BotConnection settings={botSettings} setSettings={setBotSettings} onForcePush={() => pushEverything(true)} onForcePull={() => pullEverything(userEmail)} configs={configs} employees={employees} aliases={aliases} />}
+            {activePage === 'koneksi' && <BotConnection settings={botSettings} setSettings={setBotSettings} onForcePush={() => {}} onForcePull={() => pullEverything(userEmail)} configs={configs} employees={employees} aliases={aliases} />}
             {activePage === 'simulator' && <Simulator employees={employees} shifts={shifts} history={history} setHistory={setHistory} configs={configs} aliases={aliases} botSettings={botSettings} />}
             {activePage === 'deployment' && <Deployment />}
             {activePage === 'pengaturan' && <Settings configs={configs} setConfigs={setConfigs} userEmail={userEmail} />}
