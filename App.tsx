@@ -39,7 +39,6 @@ const App: React.FC = () => {
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | null }>({ message: '', type: null });
   const [sqlCopied, setSqlCopied] = useState(false);
 
-  // --- STATE DATA ---
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [shifts, setShifts] = useState<Shift[]>(MOCK_SHIFTS);
   const [history, setHistory] = useState<LeaveHistory[]>([]);
@@ -54,7 +53,7 @@ const App: React.FC = () => {
 
   const showToast = (message: string, type: 'success' | 'error') => {
     setToast({ message, type });
-    setTimeout(() => setToast({ message: '', type: null }), 4000);
+    setTimeout(() => setToast({ message: '', type: null }), 5000);
   };
 
   const getSupabase = useCallback(() => {
@@ -62,7 +61,6 @@ const App: React.FC = () => {
     return createClient(cloudCreds.url, cloudCreds.key);
   }, [cloudCreds]);
 
-  // Logika Tarik Data (Pull)
   const pullEverything = useCallback(async (email: string) => {
     const supabase = getSupabase();
     if (!supabase) return;
@@ -125,14 +123,17 @@ const App: React.FC = () => {
       setIsAppReady(true);
       setSyncStatus('synced');
       setIsSyncing(false);
-    } catch (err) {
+    } catch (err: any) {
       console.error("Critical Pull Error:", err);
-      setSyncStatus('error');
+      if (err.message?.includes('owner_email')) {
+        setSyncStatus('init_required');
+      } else {
+        setSyncStatus('error');
+      }
       setIsSyncing(false);
     }
   }, [getSupabase]);
 
-  // Logika Simpan Data (Push) - DIPERBAIKI TOTAL
   const pushEverything = useCallback(async (isManual = false) => {
     const supabase = getSupabase();
     if (!supabase || syncStatus === 'init_required') return;
@@ -144,35 +145,30 @@ const App: React.FC = () => {
     }
 
     try {
-      // 1. Simpan Profile
       const { error: profErr } = await supabase.from('profiles').upsert({
         email: userEmail,
         bot_token: botSettings.botToken,
         bot_username: botSettings.botUsername,
         updated_at: new Date().toISOString()
       }, { onConflict: 'email' });
+      if (profErr) throw profErr;
 
-      if (profErr) throw new Error(`Profile: ${profErr.message}`);
-
-      // 2. Simpan Karyawan (Tanpa filter length agar bisa menghapus semua jika perlu)
       const { error: empErr } = await supabase.from('employees').upsert(
         employees.map(e => ({
           id: e.id, name: e.name, username: e.username, telegram_id: e.telegramId,
           role: e.role, shift_id: e.shiftId, status: e.status, owner_email: userEmail
         })), { onConflict: 'id' }
       );
-      if (empErr) throw new Error(`Employees: ${empErr.message}`);
+      if (empErr) throw empErr;
 
-      // 3. Simpan Shifts
       const { error: shftErr } = await supabase.from('shifts').upsert(
         shifts.map(s => ({
           id: s.id, name: s.name, start_time: s.startTime, end_time: s.endTime,
           category: s.category, description: s.description || '', owner_email: userEmail
         })), { onConflict: 'id' }
       );
-      if (shftErr) throw new Error(`Shifts: ${shftErr.message}`);
+      if (shftErr) throw shftErr;
 
-      // 4. Simpan Configs
       const { error: cfgErr } = await supabase.from('configs').upsert(
         configs.map(c => ({
           type: c.type, max_minutes: c.maxMinutes, max_per_day: c.maxPerDay,
@@ -180,9 +176,8 @@ const App: React.FC = () => {
           owner_email: userEmail
         })), { onConflict: 'type,owner_email' }
       );
-      if (cfgErr) throw new Error(`Configs: ${cfgErr.message}`);
+      if (cfgErr) throw cfgErr;
 
-      // 5. Simpan History
       if (history.length > 0) {
         const { error: histErr } = await supabase.from('history').upsert(
           history.map(h => ({
@@ -191,21 +186,23 @@ const App: React.FC = () => {
             status: h.status, owner_email: userEmail
           })), { onConflict: 'id' }
         );
-        if (histErr) throw new Error(`History: ${histErr.message}`);
+        if (histErr) throw histErr;
       }
 
       setSyncStatus('synced');
       lastSyncHash.current = JSON.stringify({ employees, shifts, configs, history });
-      
-      if (isManual) {
-        showToast("Sinkronisasi Cloud Sempurna!", "success");
-        setTimeout(() => setIsSyncing(false), 800);
-      }
+      if (isManual) showToast("Cloud Sync Sempurna!", "success");
+      setIsSyncing(false);
     } catch (err: any) {
       console.error("Sync Failure:", err);
-      showToast(err.message || "Gagal menyimpan data ke cloud", "error");
-      setSyncStatus('error');
-      if (isManual) setIsSyncing(false);
+      const msg = err.message || "";
+      if (msg.includes('owner_email') || msg.includes('column')) {
+        setSyncStatus('init_required');
+      } else {
+        showToast(`Error: ${msg}`, "error");
+        setSyncStatus('error');
+      }
+      setIsSyncing(false);
     }
   }, [getSupabase, employees, shifts, configs, history, botSettings, userEmail, syncStatus]);
 
@@ -248,33 +245,46 @@ const App: React.FC = () => {
   }
 
   if (syncStatus === 'init_required') {
-    const sqlFull = `CREATE TABLE IF NOT EXISTS profiles (email TEXT PRIMARY KEY, bot_token TEXT, bot_username TEXT, updated_at TIMESTAMP WITH TIME ZONE);
+    const fixSql = `-- JALANKAN INI UNTUK MEMPERBAIKI ERROR COLUMN
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS owner_email TEXT;
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS owner_email TEXT;
+ALTER TABLE shifts ADD COLUMN IF NOT EXISTS owner_email TEXT;
+ALTER TABLE configs ADD COLUMN IF NOT EXISTS owner_email TEXT;
+ALTER TABLE history ADD COLUMN IF NOT EXISTS owner_email TEXT;
+
+-- Script pembuatan tabel jika belum ada
+CREATE TABLE IF NOT EXISTS profiles (email TEXT PRIMARY KEY, bot_token TEXT, bot_username TEXT, updated_at TIMESTAMP WITH TIME ZONE, owner_email TEXT);
 CREATE TABLE IF NOT EXISTS employees (id TEXT PRIMARY KEY, name TEXT, username TEXT, telegram_id TEXT, role TEXT, shift_id TEXT, status TEXT, owner_email TEXT);
 CREATE TABLE IF NOT EXISTS shifts (id TEXT PRIMARY KEY, name TEXT, start_time TEXT, end_time TEXT, category TEXT, description TEXT, owner_email TEXT);
 CREATE TABLE IF NOT EXISTS configs (type TEXT, max_minutes INTEGER, max_per_day INTEGER, response_template TEXT, warning_template TEXT, owner_email TEXT, PRIMARY KEY (type, owner_email));
 CREATE TABLE IF NOT EXISTS history (id TEXT PRIMARY KEY, employee_name TEXT, type TEXT, time_out TEXT, time_in TEXT, date TEXT, status TEXT, owner_email TEXT);
+
+-- Matikan RLS agar akses lancar
 ALTER TABLE profiles DISABLE ROW LEVEL SECURITY;
 ALTER TABLE employees DISABLE ROW LEVEL SECURITY;
 ALTER TABLE shifts DISABLE ROW LEVEL SECURITY;
 ALTER TABLE configs DISABLE ROW LEVEL SECURITY;
-ALTER TABLE history DISABLE ROW LEVEL SECURITY;`;
+ALTER TABLE history DISABLE ROW LEVEL SECURITY;
+
+-- Reload Cache Supabase
+NOTIFY pgrst, 'reload schema';`;
 
     return (
       <div className="fixed inset-0 bg-[#020617] flex items-center justify-center p-6 z-[9999]">
         <div className="bg-white rounded-[4rem] max-w-2xl w-full p-12 lg:p-16 shadow-2xl space-y-10 text-center relative overflow-hidden">
-          <div className="w-24 h-24 bg-amber-50 rounded-[2.5rem] flex items-center justify-center mx-auto border border-amber-100">
-             <AlertTriangle className="text-amber-500" size={48} />
+          <div className="w-24 h-24 bg-rose-50 rounded-[2.5rem] flex items-center justify-center mx-auto border border-rose-100">
+             <AlertTriangle className="text-rose-500" size={48} />
           </div>
           <div className="space-y-4">
-            <h2 className="text-4xl font-black text-slate-900 italic uppercase">Konfigurasi Cloud</h2>
+            <h2 className="text-4xl font-black text-slate-900 italic uppercase">Pembaruan Schema</h2>
             <p className="text-slate-500 text-sm font-medium leading-relaxed">
-              Agar data bisa disimpan secara permanen (tidak hilang saat refresh), Anda wajib menjalankan perintah SQL di bawah ini di Dashboard Supabase Anda.
+              Ditemukan ketidaksamaan kolom antara Aplikasi dan Database (Error: owner_email tidak ditemukan). Jalankan script perbaikan di bawah ini di SQL Editor Supabase Anda.
             </p>
           </div>
           <div className="grid gap-4">
             <button 
               onClick={() => {
-                navigator.clipboard.writeText(sqlFull);
+                navigator.clipboard.writeText(fixSql);
                 setSqlCopied(true);
                 setTimeout(() => setSqlCopied(false), 3000);
               }}
@@ -283,7 +293,7 @@ ALTER TABLE history DISABLE ROW LEVEL SECURITY;`;
               }`}
             >
               {sqlCopied ? <Check size={20} /> : <Copy size={20} />}
-              {sqlCopied ? 'SQL DISALIN!' : 'SALIN SCRIPT LENGKAP'}
+              {sqlCopied ? 'SQL PERBAIKAN DISALIN!' : 'SALIN SCRIPT PERBAIKAN'}
             </button>
             <a 
               href={`${cloudCreds?.url.replace('.supabase.co', '')}/project/_/sql`} 
@@ -293,10 +303,10 @@ ALTER TABLE history DISABLE ROW LEVEL SECURITY;`;
               BUKA SQL EDITOR SUPABASE <ExternalLink size={20} />
             </a>
             <button 
-              onClick={() => pullEverything(userEmail)}
+              onClick={() => window.location.reload()}
               className="mt-4 text-[10px] font-black text-slate-400 uppercase tracking-widest hover:text-indigo-600 flex items-center justify-center gap-2"
             >
-              <RefreshCw size={14} /> Sudah menjalankan SQL? Coba Sinkron Ulang
+              <RefreshCw size={14} /> Sudah jalankan script? Klik di sini untuk memuat ulang
             </button>
           </div>
         </div>
