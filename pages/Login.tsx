@@ -2,17 +2,17 @@
 import React, { useState, useEffect } from 'react';
 import { 
   ShieldCheck, Mail, Lock, ArrowRight, Loader2, 
-  Cloud, LogIn, KeyRound, DatabaseZap, Globe, UserCheck, AlertCircle
+  Cloud, LogIn, KeyRound, DatabaseZap, Globe, UserCheck, AlertCircle, CheckCircle2, Server
 } from 'lucide-react';
+import { createClient } from '@supabase/supabase-js';
 
 interface LoginProps {
   onLogin: (email: string, cloudUrl?: string, cloudKey?: string) => void;
 }
 
 const Login: React.FC<LoginProps> = ({ onLogin }) => {
-  const [mode, setMode] = useState<'login' | 'recovery'>('login');
+  const [mode, setMode] = useState<'login' | 'register'>('register');
   const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
   const [supabaseUrl, setSupabaseUrl] = useState('');
   const [supabaseKey, setSupabaseKey] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -22,51 +22,49 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
   useEffect(() => {
     const users = JSON.parse(localStorage.getItem('zenith_known_users') || '[]');
     setKnownUsers(users);
+    if (users.length > 0) {
+      setMode('login');
+      setEmail(users[0]);
+    }
   }, []);
 
-  const handleAuth = (e: React.FormEvent) => {
+  const validateAndLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setIsLoading(true);
 
-    // Simulasi delay sinkronisasi agar user merasa data sedang divalidasi ke cloud
-    setTimeout(() => {
-      const emailKey = email.replace(/[@.]/g, '_');
-      
-      if (mode === 'recovery') {
-        if (!supabaseUrl.includes('supabase.co') || supabaseKey.length < 20) {
-          setError('Format Kunci Cloud tidak valid. Cek kembali di Dashboard Supabase.');
-          setIsLoading(false);
-          return;
-        }
-        // Registrasi & Login Cloud
-        onLogin(email, supabaseUrl, supabaseKey);
-        return;
-      }
+    const targetUrl = mode === 'register' ? supabaseUrl : localStorage.getItem(`zenith_cloud_url_${email.replace(/[@.]/g, '_')}`);
+    const targetKey = mode === 'register' ? supabaseKey : localStorage.getItem(`zenith_cloud_key_${email.replace(/[@.]/g, '_')}`);
 
-      // Login Biasa - Validasi apakah user sudah pernah registrasi cloud di browser ini
-      const savedUrl = localStorage.getItem(`zenith_cloud_url_${emailKey}`);
-      if (!savedUrl) {
-        setError('Akun belum terdaftar di perangkat ini. Gunakan mode "Cloud Sync" untuk pendaftaran pertama.');
-        setIsLoading(false);
-        return;
-      }
-
-      // Simulasi validasi password (bisa dikembangkan dengan Supabase Auth nantinya)
-      if (password.length < 4) {
-        setError('Password harus minimal 4 karakter.');
-        setIsLoading(false);
-        return;
-      }
-
-      onLogin(email);
+    if (!targetUrl || !targetKey) {
+      setError('Data Cloud (URL/Key) tidak ditemukan untuk email ini. Silakan gunakan menu "Hubungkan Baru".');
+      setMode('register');
       setIsLoading(false);
-    }, 1500);
+      return;
+    }
+
+    try {
+      // Validasi koneksi Supabase sebelum masuk
+      const supabase = createClient(targetUrl, targetKey);
+      const { error: connError } = await supabase.from('profiles').select('count').limit(1).maybeSingle();
+      
+      // Jika errornya adalah tabel tidak ada (42P01), kita tetap izinkan masuk tapi beri peringatan nanti
+      if (connError && !connError.message.includes('relation "profiles" does not exist')) {
+        throw new Error(connError.message);
+      }
+
+      // Berhasil tervalidasi
+      onLogin(email, mode === 'register' ? targetUrl : undefined, mode === 'register' ? targetKey : undefined);
+    } catch (err: any) {
+      console.error("Connection Failed:", err);
+      setError('Koneksi Gagal: ' + (err.message || 'Periksa kembali URL dan Anon Key Anda.'));
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
     <div className="min-h-screen bg-[#020617] flex items-center justify-center p-6 relative overflow-hidden">
-      {/* Visual background decor */}
       <div className="absolute top-[-20%] right-[-10%] w-[60%] h-[60%] bg-indigo-600/20 rounded-full blur-[150px]" />
       <div className="absolute bottom-[-10%] left-[-10%] w-[40%] h-[40%] bg-purple-600/10 rounded-full blur-[100px]" />
       
@@ -78,7 +76,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
           <div className="space-y-1">
             <h1 className="text-5xl font-black text-white tracking-tighter italic uppercase">ZENITH<span className="text-indigo-500">BOT</span></h1>
             <p className="text-[11px] text-indigo-400 font-black uppercase tracking-[0.5em] flex items-center justify-center gap-2">
-               <Globe size={12} /> Global Database System
+               <Globe size={12} /> Cloud Persistence Engine
             </p>
           </div>
         </div>
@@ -89,17 +87,17 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
               onClick={() => { setMode('login'); setError(''); }} 
               className={`flex-1 py-4 rounded-[2rem] text-[10px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${mode === 'login' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-500/20' : 'text-slate-500 hover:text-white'}`}
             >
-              <LogIn size={14} /> Login Browser
+              <LogIn size={14} /> Masuk Sesi
             </button>
             <button 
-              onClick={() => { setMode('recovery'); setError(''); }} 
-              className={`flex-1 py-4 rounded-[2rem] text-[10px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${mode === 'recovery' ? 'bg-amber-600 text-white shadow-xl shadow-amber-500/20' : 'text-slate-500 hover:text-white'}`}
+              onClick={() => { setMode('register'); setError(''); }} 
+              className={`flex-1 py-4 rounded-[2rem] text-[10px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${mode === 'register' ? 'bg-amber-600 text-white shadow-xl shadow-amber-500/20' : 'text-slate-500 hover:text-white'}`}
             >
-              <Cloud size={14} /> Cloud Registration
+              <Cloud size={14} /> Hubungkan Baru
             </button>
           </div>
 
-          <form onSubmit={handleAuth} className="px-8 pb-10 space-y-6">
+          <form onSubmit={validateAndLogin} className="px-8 pb-10 space-y-6">
             <div className="space-y-5">
               <div className="space-y-2">
                 <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Administrator Email</label>
@@ -117,20 +115,8 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
                 </div>
               </div>
 
-              {mode === 'login' ? (
-                <div className="space-y-2 animate-in slide-in-from-top-2">
-                   <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Password Sesi</label>
-                   <div className="relative">
-                      <Lock className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-600" size={18} />
-                      <input 
-                        required type="password" value={password} onChange={e => setPassword(e.target.value)}
-                        className="w-full bg-black/40 border border-white/10 text-white pl-14 pr-6 py-5 rounded-[1.5rem] text-sm font-bold focus:ring-2 focus:ring-indigo-500 outline-none transition-all placeholder:text-slate-700"
-                        placeholder="••••••••"
-                      />
-                   </div>
-                </div>
-              ) : (
-                <div className="space-y-5 animate-in slide-in-from-bottom-4 duration-500 bg-amber-500/5 p-8 rounded-[2.5rem] border border-amber-500/20">
+              {mode === 'register' && (
+                <div className="space-y-5 animate-in slide-in-from-bottom-4 duration-500 bg-white/5 p-8 rounded-[2.5rem] border border-white/5">
                    <div className="flex items-center gap-3 mb-2">
                       <KeyRound className="text-amber-500" size={18} />
                       <span className="text-[10px] font-black text-amber-500 uppercase tracking-widest">Supabase Setup</span>
@@ -141,44 +127,48 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
                         <input required value={supabaseUrl} onChange={e => setSupabaseUrl(e.target.value)} className="w-full bg-black/40 border border-white/10 text-white px-5 py-4 rounded-xl text-xs font-mono focus:ring-1 focus:ring-amber-500" placeholder="https://xyz.supabase.co" />
                       </div>
                       <div className="space-y-1">
-                        <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest">API Anon Key</label>
+                        <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Anon Key</label>
                         <input required type="password" value={supabaseKey} onChange={e => setSupabaseKey(e.target.value)} className="w-full bg-black/40 border border-white/10 text-white px-5 py-4 rounded-xl text-xs font-mono focus:ring-1 focus:ring-amber-500" placeholder="eyJhbGc..." />
                       </div>
                    </div>
-                   <p className="text-[8px] text-amber-500/60 italic font-medium leading-relaxed mt-2">
-                      * Mode ini akan menghubungkan email Anda ke database Supabase secara permanen.
-                   </p>
                 </div>
               )}
             </div>
 
             {error && (
-              <div className="flex items-center gap-3 bg-rose-500/10 p-4 rounded-2xl border border-rose-500/20 text-rose-500 animate-shake">
-                <AlertCircle size={16} className="shrink-0" />
-                <p className="text-[9px] font-black uppercase">{error}</p>
+              <div className="flex items-center gap-3 bg-rose-500/10 p-5 rounded-3xl border border-rose-500/20 text-rose-500 animate-in slide-in-from-top-2">
+                <AlertCircle size={20} className="shrink-0" />
+                <p className="text-[10px] font-black uppercase leading-relaxed">{error}</p>
               </div>
             )}
 
             <button 
               disabled={isLoading} 
-              className={`w-full group relative ${mode === 'recovery' ? 'bg-amber-600 hover:bg-amber-500' : 'bg-indigo-600 hover:bg-indigo-50'}`}
+              className={`w-full py-5 rounded-[1.5rem] font-black text-[11px] uppercase tracking-widest transition-all flex items-center justify-center gap-3 ${
+                mode === 'register' ? 'bg-amber-600 text-white hover:bg-amber-500 shadow-xl shadow-amber-900/20' : 'bg-indigo-600 text-white hover:bg-indigo-500 shadow-xl shadow-indigo-900/20'
+              }`}
             >
                {isLoading ? (
-                <Loader2 className="animate-spin mx-auto" size={20} />
+                <Loader2 className="animate-spin" size={20} />
               ) : (
-                <span className="flex items-center justify-center gap-3">
-                  {mode === 'recovery' ? 'HUBUNGKAN KE CLOUD' : 'MULAI SESI ADMIN'} 
-                  <ArrowRight size={18} className="group-hover:translate-x-1 transition-transform" />
-                </span>
+                <>
+                  {mode === 'register' ? 'VERIFIKASI & DAFTARKAN CLOUD' : 'LANJUTKAN KE DASHBOARD'} 
+                  <ArrowRight size={18} />
+                </>
               )}
             </button>
           </form>
         </div>
         
-        <div className="flex items-center justify-center gap-6 opacity-40">
-           <p className="text-[8px] text-white font-black uppercase tracking-[0.5em]">ZENITH CORE v4.8</p>
-           <div className="w-1 h-1 bg-white rounded-full" />
-           <p className="text-[8px] text-white font-black uppercase tracking-[0.5em]">ENCRYPTED SYNC</p>
+        <div className="flex flex-col items-center gap-4 opacity-40">
+           <div className="flex items-center gap-6">
+              <p className="text-[8px] text-white font-black uppercase tracking-[0.5em]">ZENITH v5.0</p>
+              <div className="w-1 h-1 bg-white rounded-full" />
+              <p className="text-[8px] text-white font-black uppercase tracking-[0.5em]">REALTIME DATABASE</p>
+           </div>
+           <p className="text-[7px] text-slate-500 font-medium max-w-[300px] text-center uppercase tracking-widest leading-relaxed">
+             Semua data disimpan di Supabase. Anda bisa login di HP lain dan data tetap sinkron.
+           </p>
         </div>
       </div>
     </div>
