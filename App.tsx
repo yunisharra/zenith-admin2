@@ -22,12 +22,12 @@ import { MOCK_BOT_ALIASES, MOCK_LEAVE_CONFIGS, MOCK_SHIFTS } from './constants';
 
 const App: React.FC = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(() => !!localStorage.getItem('zenith_active_session'));
-  const [userEmail, setUserEmail] = useState<string>(() => localStorage.getItem('zenith_active_session') || '');
+  const [userEmail, setUserEmail] = useState<string>(() => (localStorage.getItem('zenith_active_session') || '').toLowerCase().trim());
   const [cloudCreds, setCloudCreds] = useState<{url: string, key: string} | null>(() => {
     const email = localStorage.getItem('zenith_active_session');
     if (!email) return null;
     const vault = JSON.parse(localStorage.getItem('zenith_vault') || '[]');
-    const user = vault.find((u: any) => u.email === email);
+    const user = vault.find((u: any) => u.email.toLowerCase().trim() === email.toLowerCase().trim());
     return user ? { url: user.url, key: user.key } : null;
   });
 
@@ -54,7 +54,7 @@ const App: React.FC = () => {
 
   const showToast = (message: string, type: 'success' | 'error') => {
     setToast({ message, type });
-    setTimeout(() => setToast({ message: '', type: null }), 3000);
+    setTimeout(() => setToast({ message: '', type: null }), 4000);
   };
 
   const getSupabase = useCallback(() => {
@@ -69,7 +69,7 @@ const App: React.FC = () => {
 
     setIsSyncing(true);
     setSyncStatus('syncing');
-    setSyncStep('Mengambil Data Cloud...');
+    setSyncStep('Sinkronisasi Awal...');
 
     try {
       const { error: pErr, data: prof, status: pStatus } = await supabase.from('profiles').select('*').eq('email', email).maybeSingle();
@@ -80,6 +80,13 @@ const App: React.FC = () => {
         return;
       }
 
+      const [{ data: emp }, { data: shft }, { data: cfgs }, { data: hist }] = await Promise.all([
+        supabase.from('employees').select('*').eq('owner_email', email),
+        supabase.from('shifts').select('*').eq('owner_email', email),
+        supabase.from('configs').select('*').eq('owner_email', email),
+        supabase.from('history').select('*').eq('owner_email', email)
+      ]);
+
       if (prof) {
         setBotSettings(prev => ({
           ...prev,
@@ -88,14 +95,6 @@ const App: React.FC = () => {
         }));
       }
 
-      const [{ data: emp }, { data: shft }, { data: cfgs }, { data: hist }] = await Promise.all([
-        supabase.from('employees').select('*').eq('owner_email', email),
-        supabase.from('shifts').select('*').eq('owner_email', email),
-        supabase.from('configs').select('*').eq('owner_email', email),
-        supabase.from('history').select('*').eq('owner_email', email)
-      ]);
-
-      // MAPPING DATA KE FORMAT STATE (camelCase)
       const mappedEmployees: Employee[] = (emp || []).map((d: any) => ({
         id: d.id, name: d.name, username: d.username, telegramId: d.telegram_id,
         role: d.role, shiftId: d.shift_id, status: d.status
@@ -116,97 +115,95 @@ const App: React.FC = () => {
         timeOut: d.time_out, timeIn: d.time_in, date: d.date, status: d.status
       }));
 
-      // UPDATE STATE
       setEmployees(mappedEmployees);
       setShifts(mappedShifts);
       setConfigs(mappedConfigs);
       setHistory(mappedHistory);
 
-      // PENTING: Set Hash agar tidak terjadi auto-save loop saat startup
-      lastSyncHash.current = JSON.stringify({ 
-        employees: mappedEmployees, 
-        shifts: mappedShifts, 
-        configs: mappedConfigs,
-        history: mappedHistory
-      });
-
-      setSyncStatus('synced');
+      lastSyncHash.current = JSON.stringify({ employees: mappedEmployees, shifts: mappedShifts, configs: mappedConfigs, history: mappedHistory });
       hasInitialPullDone.current = true;
       setIsAppReady(true);
+      setSyncStatus('synced');
       setIsSyncing(false);
     } catch (err) {
-      console.error("Pull Error:", err);
+      console.error("Critical Pull Error:", err);
       setSyncStatus('error');
       setIsSyncing(false);
     }
   }, [getSupabase]);
 
-  // Logika Simpan Data (Push)
+  // Logika Simpan Data (Push) - DIPERBAIKI TOTAL
   const pushEverything = useCallback(async (isManual = false) => {
     const supabase = getSupabase();
     if (!supabase || syncStatus === 'init_required') return;
 
-    setSyncStatus('syncing');
     if (isManual) {
       setIsSyncing(true);
-      setSyncStep('Mengunggah ke Cloud...');
+      setSyncStatus('syncing');
+      setSyncStep('Menyimpan Data...');
     }
 
     try {
       // 1. Simpan Profile
-      await supabase.from('profiles').upsert({
+      const { error: profErr } = await supabase.from('profiles').upsert({
         email: userEmail,
         bot_token: botSettings.botToken,
         bot_username: botSettings.botUsername,
         updated_at: new Date().toISOString()
       }, { onConflict: 'email' });
 
-      // 2. Simpan Karyawan
-      if (employees.length > 0) {
-        await supabase.from('employees').upsert(
-          employees.map(e => ({
-            id: e.id, name: e.name, username: e.username, telegram_id: e.telegramId,
-            role: e.role, shift_id: e.shiftId, status: e.status, owner_email: userEmail
-          })), { onConflict: 'id' }
-        );
-      }
+      if (profErr) throw new Error(`Profile: ${profErr.message}`);
+
+      // 2. Simpan Karyawan (Tanpa filter length agar bisa menghapus semua jika perlu)
+      const { error: empErr } = await supabase.from('employees').upsert(
+        employees.map(e => ({
+          id: e.id, name: e.name, username: e.username, telegram_id: e.telegramId,
+          role: e.role, shift_id: e.shiftId, status: e.status, owner_email: userEmail
+        })), { onConflict: 'id' }
+      );
+      if (empErr) throw new Error(`Employees: ${empErr.message}`);
 
       // 3. Simpan Shifts
-      await supabase.from('shifts').upsert(
+      const { error: shftErr } = await supabase.from('shifts').upsert(
         shifts.map(s => ({
           id: s.id, name: s.name, start_time: s.startTime, end_time: s.endTime,
           category: s.category, description: s.description || '', owner_email: userEmail
         })), { onConflict: 'id' }
       );
+      if (shftErr) throw new Error(`Shifts: ${shftErr.message}`);
 
       // 4. Simpan Configs
-      await supabase.from('configs').upsert(
+      const { error: cfgErr } = await supabase.from('configs').upsert(
         configs.map(c => ({
           type: c.type, max_minutes: c.maxMinutes, max_per_day: c.maxPerDay,
           response_template: c.responseTemplate || '', warning_template: c.warningTemplate || '',
           owner_email: userEmail
         })), { onConflict: 'type,owner_email' }
       );
+      if (cfgErr) throw new Error(`Configs: ${cfgErr.message}`);
 
       // 5. Simpan History
       if (history.length > 0) {
-        await supabase.from('history').upsert(
+        const { error: histErr } = await supabase.from('history').upsert(
           history.map(h => ({
             id: h.id, employee_name: h.employeeName, type: h.type,
             time_out: h.timeOut, time_in: h.timeIn, date: h.date, 
             status: h.status, owner_email: userEmail
           })), { onConflict: 'id' }
         );
+        if (histErr) throw new Error(`History: ${histErr.message}`);
       }
 
       setSyncStatus('synced');
       lastSyncHash.current = JSON.stringify({ employees, shifts, configs, history });
+      
       if (isManual) {
-        showToast("Sinkronisasi Cloud Berhasil!", "success");
+        showToast("Sinkronisasi Cloud Sempurna!", "success");
         setTimeout(() => setIsSyncing(false), 800);
       }
-    } catch (err) {
-      console.error("Push Error:", err);
+    } catch (err: any) {
+      console.error("Sync Failure:", err);
+      showToast(err.message || "Gagal menyimpan data ke cloud", "error");
       setSyncStatus('error');
       if (isManual) setIsSyncing(false);
     }
@@ -216,26 +213,21 @@ const App: React.FC = () => {
     if (isAuthenticated && !hasInitialPullDone.current) pullEverything(userEmail);
   }, [isAuthenticated, userEmail, pullEverything]);
 
-  // Auto-Save Effect dengan pengamanan hash
   useEffect(() => {
     if (!isAuthenticated || !hasInitialPullDone.current || !isAppReady) return;
-    
     const currentHash = JSON.stringify({ employees, shifts, configs, history });
     if (currentHash === lastSyncHash.current) return;
-
-    const timeout = setTimeout(() => {
-      pushEverything(false);
-    }, 3000);
-
+    const timeout = setTimeout(() => pushEverything(false), 3000);
     return () => clearTimeout(timeout);
   }, [employees, shifts, configs, history, isAuthenticated, isAppReady, pushEverything]);
 
   const handleLogin = (email: string, url: string, key: string) => {
-    setUserEmail(email);
+    const cleanEmail = email.toLowerCase().trim();
+    setUserEmail(cleanEmail);
     setCloudCreds({ url, key });
     setIsAuthenticated(true);
-    localStorage.setItem('zenith_active_session', email);
-    pullEverything(email);
+    localStorage.setItem('zenith_active_session', cleanEmail);
+    pullEverything(cleanEmail);
   };
 
   const handleLogout = () => {
@@ -256,11 +248,16 @@ const App: React.FC = () => {
   }
 
   if (syncStatus === 'init_required') {
-    const sqlScript = `CREATE TABLE IF NOT EXISTS profiles (email TEXT PRIMARY KEY, bot_token TEXT, bot_username TEXT, updated_at TIMESTAMP WITH TIME ZONE);
+    const sqlFull = `CREATE TABLE IF NOT EXISTS profiles (email TEXT PRIMARY KEY, bot_token TEXT, bot_username TEXT, updated_at TIMESTAMP WITH TIME ZONE);
 CREATE TABLE IF NOT EXISTS employees (id TEXT PRIMARY KEY, name TEXT, username TEXT, telegram_id TEXT, role TEXT, shift_id TEXT, status TEXT, owner_email TEXT);
 CREATE TABLE IF NOT EXISTS shifts (id TEXT PRIMARY KEY, name TEXT, start_time TEXT, end_time TEXT, category TEXT, description TEXT, owner_email TEXT);
 CREATE TABLE IF NOT EXISTS configs (type TEXT, max_minutes INTEGER, max_per_day INTEGER, response_template TEXT, warning_template TEXT, owner_email TEXT, PRIMARY KEY (type, owner_email));
-CREATE TABLE IF NOT EXISTS history (id TEXT PRIMARY KEY, employee_name TEXT, type TEXT, time_out TEXT, time_in TEXT, date TEXT, status TEXT, owner_email TEXT);`;
+CREATE TABLE IF NOT EXISTS history (id TEXT PRIMARY KEY, employee_name TEXT, type TEXT, time_out TEXT, time_in TEXT, date TEXT, status TEXT, owner_email TEXT);
+ALTER TABLE profiles DISABLE ROW LEVEL SECURITY;
+ALTER TABLE employees DISABLE ROW LEVEL SECURITY;
+ALTER TABLE shifts DISABLE ROW LEVEL SECURITY;
+ALTER TABLE configs DISABLE ROW LEVEL SECURITY;
+ALTER TABLE history DISABLE ROW LEVEL SECURITY;`;
 
     return (
       <div className="fixed inset-0 bg-[#020617] flex items-center justify-center p-6 z-[9999]">
@@ -269,15 +266,15 @@ CREATE TABLE IF NOT EXISTS history (id TEXT PRIMARY KEY, employee_name TEXT, typ
              <AlertTriangle className="text-amber-500" size={48} />
           </div>
           <div className="space-y-4">
-            <h2 className="text-4xl font-black text-slate-900 italic uppercase">Database Belum Siap</h2>
+            <h2 className="text-4xl font-black text-slate-900 italic uppercase">Konfigurasi Cloud</h2>
             <p className="text-slate-500 text-sm font-medium leading-relaxed">
-              Tabel database belum lengkap. Salin script di bawah dan jalankan di SQL Editor Supabase Anda agar sinkronisasi bisa berjalan.
+              Agar data bisa disimpan secara permanen (tidak hilang saat refresh), Anda wajib menjalankan perintah SQL di bawah ini di Dashboard Supabase Anda.
             </p>
           </div>
           <div className="grid gap-4">
             <button 
               onClick={() => {
-                navigator.clipboard.writeText(sqlScript);
+                navigator.clipboard.writeText(sqlFull);
                 setSqlCopied(true);
                 setTimeout(() => setSqlCopied(false), 3000);
               }}
@@ -286,7 +283,7 @@ CREATE TABLE IF NOT EXISTS history (id TEXT PRIMARY KEY, employee_name TEXT, typ
               }`}
             >
               {sqlCopied ? <Check size={20} /> : <Copy size={20} />}
-              {sqlCopied ? 'SQL DISALIN!' : 'SALIN SCRIPT SQL'}
+              {sqlCopied ? 'SQL DISALIN!' : 'SALIN SCRIPT LENGKAP'}
             </button>
             <a 
               href={`${cloudCreds?.url.replace('.supabase.co', '')}/project/_/sql`} 
@@ -295,6 +292,12 @@ CREATE TABLE IF NOT EXISTS history (id TEXT PRIMARY KEY, employee_name TEXT, typ
             >
               BUKA SQL EDITOR SUPABASE <ExternalLink size={20} />
             </a>
+            <button 
+              onClick={() => pullEverything(userEmail)}
+              className="mt-4 text-[10px] font-black text-slate-400 uppercase tracking-widest hover:text-indigo-600 flex items-center justify-center gap-2"
+            >
+              <RefreshCw size={14} /> Sudah menjalankan SQL? Coba Sinkron Ulang
+            </button>
           </div>
         </div>
       </div>
@@ -319,11 +322,13 @@ CREATE TABLE IF NOT EXISTS history (id TEXT PRIMARY KEY, employee_name TEXT, typ
         <div className="bg-white px-12 py-5 border-b border-slate-200/60 flex justify-between items-center shadow-sm z-20">
            <div className={`flex items-center gap-3 px-5 py-2.5 rounded-2xl border transition-all ${
               syncStatus === 'syncing' ? 'bg-indigo-50 border-indigo-200 text-indigo-500' : 
+              syncStatus === 'error' ? 'bg-rose-50 border-rose-200 text-rose-500' :
               'bg-emerald-50 border-emerald-200 text-emerald-600 shadow-md shadow-emerald-500/10'
            }`}>
-              {syncStatus === 'syncing' ? <RefreshCw size={14} className="animate-spin" /> : <Database size={14} />}
+              {syncStatus === 'syncing' ? <RefreshCw size={14} className="animate-spin" /> : 
+               syncStatus === 'error' ? <AlertTriangle size={14} /> : <Database size={14} />}
               <span className="text-[10px] font-black uppercase tracking-widest">
-                {syncStatus === 'syncing' ? 'SYNCING...' : 'CLOUD SYNC ACTIVE'}
+                {syncStatus === 'syncing' ? 'SYNCING...' : syncStatus === 'error' ? 'SYNC ERROR' : 'CLOUD SYNC ACTIVE'}
               </span>
            </div>
            
