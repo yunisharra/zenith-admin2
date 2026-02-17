@@ -16,7 +16,7 @@ import Login from './pages/Login';
 import { createClient } from '@supabase/supabase-js';
 import { 
   RefreshCw, DatabaseZap, CheckCircle2, XCircle, UploadCloud, 
-  Database, AlertTriangle, ExternalLink, Copy, Check, ShieldCheck
+  Database, AlertTriangle, ExternalLink, Copy, Check
 } from 'lucide-react';
 import { MOCK_BOT_ALIASES, MOCK_LEAVE_CONFIGS, MOCK_SHIFTS } from './constants';
 
@@ -39,6 +39,7 @@ const App: React.FC = () => {
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | null }>({ message: '', type: null });
   const [sqlCopied, setSqlCopied] = useState(false);
 
+  // --- STATE DATA ---
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [shifts, setShifts] = useState<Shift[]>(MOCK_SHIFTS);
   const [history, setHistory] = useState<LeaveHistory[]>([]);
@@ -61,6 +62,7 @@ const App: React.FC = () => {
     return createClient(cloudCreds.url, cloudCreds.key);
   }, [cloudCreds]);
 
+  // Logika Tarik Data (Pull) - DIPERBAIKI: Mengisi semua state
   const pullEverything = useCallback(async (email: string) => {
     const supabase = getSupabase();
     if (!supabase) return;
@@ -70,12 +72,20 @@ const App: React.FC = () => {
     setSyncStep('Sinkronisasi Cloud...');
 
     try {
-      const { error: pErr, status: pStatus } = await supabase.from('profiles').select('*').eq('email', email).maybeSingle();
+      const { error: pErr, data: prof, status: pStatus } = await supabase.from('profiles').select('*').eq('email', email).maybeSingle();
       
       if (pErr && (pErr.message.includes('relation') || pErr.code === '42P01' || pStatus === 400)) {
         setSyncStatus('init_required');
         setIsSyncing(false);
         return;
+      }
+
+      if (prof) {
+        setBotSettings(prev => ({
+          ...prev,
+          botToken: prof.bot_token || prev.botToken,
+          botUsername: prof.bot_username || prev.botUsername,
+        }));
       }
 
       const [{ data: emp }, { data: shft }, { data: cfgs }] = await Promise.all([
@@ -84,21 +94,43 @@ const App: React.FC = () => {
         supabase.from('configs').select('*').eq('owner_email', email)
       ]);
 
-      if (emp) setEmployees(emp.map((d: any) => ({
-        id: d.id, name: d.name, username: d.username, telegramId: d.telegram_id,
-        role: d.role, shiftId: d.shift_id, status: d.status
-      })));
+      // Set Employees
+      if (emp && emp.length > 0) {
+        setEmployees(emp.map((d: any) => ({
+          id: d.id, name: d.name, username: d.username, telegramId: d.telegram_id,
+          role: d.role, shiftId: d.shift_id, status: d.status
+        })));
+      }
+
+      // Set Shifts (Penting!)
+      if (shft && shft.length > 0) {
+        setShifts(shft.map((d: any) => ({
+          id: d.id, name: d.name, startTime: d.start_time, endTime: d.end_time,
+          category: d.category, description: d.description
+        })));
+      }
+
+      // Set Configs (Penting!)
+      if (cfgs && cfgs.length > 0) {
+        setConfigs(cfgs.map((d: any) => ({
+          type: d.type, maxMinutes: d.max_minutes, maxPerDay: d.max_per_day,
+          responseTemplate: d.response_template, warningTemplate: d.warning_template
+        })));
+      }
 
       setSyncStatus('synced');
       hasInitialPullDone.current = true;
+      lastSyncHash.current = JSON.stringify({ employees: emp || [], shifts: shft || [], configs: cfgs || [] });
       setIsAppReady(true);
       setIsSyncing(false);
     } catch (err) {
+      console.error("Pull Error:", err);
       setSyncStatus('error');
       setIsSyncing(false);
     }
   }, [getSupabase]);
 
+  // Logika Simpan Data (Push) - DIPERBAIKI: Menyimpan Shifts & Configs
   const pushEverything = useCallback(async (isManual = false) => {
     const supabase = getSupabase();
     if (!supabase || syncStatus === 'init_required') return;
@@ -110,6 +142,7 @@ const App: React.FC = () => {
     }
 
     try {
+      // 1. Simpan Profile
       const { error: upsertErr, status: upsertStatus } = await supabase.from('profiles').upsert({
         email: userEmail,
         bot_token: botSettings.botToken,
@@ -123,12 +156,34 @@ const App: React.FC = () => {
         return;
       }
 
+      // 2. Simpan Karyawan
       if (employees.length > 0) {
         await supabase.from('employees').upsert(
           employees.map(e => ({
             id: e.id, name: e.name, username: e.username, telegram_id: e.telegramId,
             role: e.role, shift_id: e.shiftId, status: e.status, owner_email: userEmail
           })), { onConflict: 'id' }
+        );
+      }
+
+      // 3. Simpan Shifts
+      if (shifts.length > 0) {
+        await supabase.from('shifts').upsert(
+          shifts.map(s => ({
+            id: s.id, name: s.name, start_time: s.startTime, end_time: s.endTime,
+            category: s.category, description: s.description || '', owner_email: userEmail
+          })), { onConflict: 'id' }
+        );
+      }
+
+      // 4. Simpan Configs
+      if (configs.length > 0) {
+        await supabase.from('configs').upsert(
+          configs.map(c => ({
+            type: c.type, max_minutes: c.maxMinutes, max_per_day: c.maxPerDay,
+            response_template: c.responseTemplate || '', warning_template: c.warningTemplate || '',
+            owner_email: userEmail
+          })), { onConflict: 'type,owner_email' }
         );
       }
 
@@ -139,6 +194,7 @@ const App: React.FC = () => {
         setTimeout(() => setIsSyncing(false), 800);
       }
     } catch (err) {
+      console.error("Push Error:", err);
       setSyncStatus('error');
       if (isManual) setIsSyncing(false);
     }
@@ -250,7 +306,7 @@ CREATE TABLE IF NOT EXISTS configs (type TEXT, max_minutes INTEGER, max_per_day 
         <div className="bg-white px-12 py-5 border-b border-slate-200/60 flex justify-between items-center shadow-sm z-20">
            <div className={`flex items-center gap-3 px-5 py-2.5 rounded-2xl border transition-all ${
               syncStatus === 'syncing' ? 'bg-indigo-50 border-indigo-200 text-indigo-500' : 
-              'bg-emerald-50 border-emerald-200 text-emerald-600'
+              'bg-emerald-50 border-emerald-200 text-emerald-600 shadow-md shadow-emerald-500/10'
            }`}>
               {syncStatus === 'syncing' ? <RefreshCw size={14} className="animate-spin" /> : <Database size={14} />}
               <span className="text-[10px] font-black uppercase tracking-widest">
