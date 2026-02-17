@@ -62,14 +62,14 @@ const App: React.FC = () => {
     return createClient(cloudCreds.url, cloudCreds.key);
   }, [cloudCreds]);
 
-  // Logika Tarik Data (Pull) - DIPERBAIKI: Mengisi semua state
+  // Logika Tarik Data (Pull)
   const pullEverything = useCallback(async (email: string) => {
     const supabase = getSupabase();
     if (!supabase) return;
 
     setIsSyncing(true);
     setSyncStatus('syncing');
-    setSyncStep('Sinkronisasi Cloud...');
+    setSyncStep('Mengambil Data Cloud...');
 
     try {
       const { error: pErr, data: prof, status: pStatus } = await supabase.from('profiles').select('*').eq('email', email).maybeSingle();
@@ -88,39 +88,50 @@ const App: React.FC = () => {
         }));
       }
 
-      const [{ data: emp }, { data: shft }, { data: cfgs }] = await Promise.all([
+      const [{ data: emp }, { data: shft }, { data: cfgs }, { data: hist }] = await Promise.all([
         supabase.from('employees').select('*').eq('owner_email', email),
         supabase.from('shifts').select('*').eq('owner_email', email),
-        supabase.from('configs').select('*').eq('owner_email', email)
+        supabase.from('configs').select('*').eq('owner_email', email),
+        supabase.from('history').select('*').eq('owner_email', email)
       ]);
 
-      // Set Employees
-      if (emp && emp.length > 0) {
-        setEmployees(emp.map((d: any) => ({
-          id: d.id, name: d.name, username: d.username, telegramId: d.telegram_id,
-          role: d.role, shiftId: d.shift_id, status: d.status
-        })));
-      }
+      // MAPPING DATA KE FORMAT STATE (camelCase)
+      const mappedEmployees: Employee[] = (emp || []).map((d: any) => ({
+        id: d.id, name: d.name, username: d.username, telegramId: d.telegram_id,
+        role: d.role, shiftId: d.shift_id, status: d.status
+      }));
 
-      // Set Shifts (Penting!)
-      if (shft && shft.length > 0) {
-        setShifts(shft.map((d: any) => ({
-          id: d.id, name: d.name, startTime: d.start_time, endTime: d.end_time,
-          category: d.category, description: d.description
-        })));
-      }
+      const mappedShifts: Shift[] = (shft || []).length > 0 ? shft.map((d: any) => ({
+        id: d.id, name: d.name, startTime: d.start_time, endTime: d.end_time,
+        category: d.category, description: d.description
+      })) : MOCK_SHIFTS;
 
-      // Set Configs (Penting!)
-      if (cfgs && cfgs.length > 0) {
-        setConfigs(cfgs.map((d: any) => ({
-          type: d.type, maxMinutes: d.max_minutes, maxPerDay: d.max_per_day,
-          responseTemplate: d.response_template, warningTemplate: d.warning_template
-        })));
-      }
+      const mappedConfigs: LeaveConfig[] = (cfgs || []).length > 0 ? cfgs.map((d: any) => ({
+        type: d.type, maxMinutes: d.max_minutes, maxPerDay: d.max_per_day,
+        responseTemplate: d.response_template, warningTemplate: d.warning_template
+      })) : MOCK_LEAVE_CONFIGS;
+
+      const mappedHistory: LeaveHistory[] = (hist || []).map((d: any) => ({
+        id: d.id, employeeName: d.employee_name, type: d.type,
+        timeOut: d.time_out, timeIn: d.time_in, date: d.date, status: d.status
+      }));
+
+      // UPDATE STATE
+      setEmployees(mappedEmployees);
+      setShifts(mappedShifts);
+      setConfigs(mappedConfigs);
+      setHistory(mappedHistory);
+
+      // PENTING: Set Hash agar tidak terjadi auto-save loop saat startup
+      lastSyncHash.current = JSON.stringify({ 
+        employees: mappedEmployees, 
+        shifts: mappedShifts, 
+        configs: mappedConfigs,
+        history: mappedHistory
+      });
 
       setSyncStatus('synced');
       hasInitialPullDone.current = true;
-      lastSyncHash.current = JSON.stringify({ employees: emp || [], shifts: shft || [], configs: cfgs || [] });
       setIsAppReady(true);
       setIsSyncing(false);
     } catch (err) {
@@ -130,7 +141,7 @@ const App: React.FC = () => {
     }
   }, [getSupabase]);
 
-  // Logika Simpan Data (Push) - DIPERBAIKI: Menyimpan Shifts & Configs
+  // Logika Simpan Data (Push)
   const pushEverything = useCallback(async (isManual = false) => {
     const supabase = getSupabase();
     if (!supabase || syncStatus === 'init_required') return;
@@ -138,23 +149,17 @@ const App: React.FC = () => {
     setSyncStatus('syncing');
     if (isManual) {
       setIsSyncing(true);
-      setSyncStep('Menyimpan Data...');
+      setSyncStep('Mengunggah ke Cloud...');
     }
 
     try {
       // 1. Simpan Profile
-      const { error: upsertErr, status: upsertStatus } = await supabase.from('profiles').upsert({
+      await supabase.from('profiles').upsert({
         email: userEmail,
         bot_token: botSettings.botToken,
         bot_username: botSettings.botUsername,
         updated_at: new Date().toISOString()
       }, { onConflict: 'email' });
-
-      if (upsertErr && (upsertErr.message.includes('relation') || upsertStatus === 400)) {
-        setSyncStatus('init_required');
-        setIsSyncing(false);
-        return;
-      }
 
       // 2. Simpan Karyawan
       if (employees.length > 0) {
@@ -167,30 +172,37 @@ const App: React.FC = () => {
       }
 
       // 3. Simpan Shifts
-      if (shifts.length > 0) {
-        await supabase.from('shifts').upsert(
-          shifts.map(s => ({
-            id: s.id, name: s.name, start_time: s.startTime, end_time: s.endTime,
-            category: s.category, description: s.description || '', owner_email: userEmail
+      await supabase.from('shifts').upsert(
+        shifts.map(s => ({
+          id: s.id, name: s.name, start_time: s.startTime, end_time: s.endTime,
+          category: s.category, description: s.description || '', owner_email: userEmail
+        })), { onConflict: 'id' }
+      );
+
+      // 4. Simpan Configs
+      await supabase.from('configs').upsert(
+        configs.map(c => ({
+          type: c.type, max_minutes: c.maxMinutes, max_per_day: c.maxPerDay,
+          response_template: c.responseTemplate || '', warning_template: c.warningTemplate || '',
+          owner_email: userEmail
+        })), { onConflict: 'type,owner_email' }
+      );
+
+      // 5. Simpan History
+      if (history.length > 0) {
+        await supabase.from('history').upsert(
+          history.map(h => ({
+            id: h.id, employee_name: h.employeeName, type: h.type,
+            time_out: h.timeOut, time_in: h.timeIn, date: h.date, 
+            status: h.status, owner_email: userEmail
           })), { onConflict: 'id' }
         );
       }
 
-      // 4. Simpan Configs
-      if (configs.length > 0) {
-        await supabase.from('configs').upsert(
-          configs.map(c => ({
-            type: c.type, max_minutes: c.maxMinutes, max_per_day: c.maxPerDay,
-            response_template: c.responseTemplate || '', warning_template: c.warningTemplate || '',
-            owner_email: userEmail
-          })), { onConflict: 'type,owner_email' }
-        );
-      }
-
       setSyncStatus('synced');
-      lastSyncHash.current = JSON.stringify({ employees, shifts, configs });
+      lastSyncHash.current = JSON.stringify({ employees, shifts, configs, history });
       if (isManual) {
-        showToast("Sinkronisasi Berhasil!", "success");
+        showToast("Sinkronisasi Cloud Berhasil!", "success");
         setTimeout(() => setIsSyncing(false), 800);
       }
     } catch (err) {
@@ -198,19 +210,25 @@ const App: React.FC = () => {
       setSyncStatus('error');
       if (isManual) setIsSyncing(false);
     }
-  }, [getSupabase, employees, shifts, configs, botSettings, userEmail, syncStatus]);
+  }, [getSupabase, employees, shifts, configs, history, botSettings, userEmail, syncStatus]);
 
   useEffect(() => {
     if (isAuthenticated && !hasInitialPullDone.current) pullEverything(userEmail);
   }, [isAuthenticated, userEmail, pullEverything]);
 
+  // Auto-Save Effect dengan pengamanan hash
   useEffect(() => {
     if (!isAuthenticated || !hasInitialPullDone.current || !isAppReady) return;
-    const currentHash = JSON.stringify({ employees, shifts, configs });
+    
+    const currentHash = JSON.stringify({ employees, shifts, configs, history });
     if (currentHash === lastSyncHash.current) return;
-    const timeout = setTimeout(() => pushEverything(false), 3000);
+
+    const timeout = setTimeout(() => {
+      pushEverything(false);
+    }, 3000);
+
     return () => clearTimeout(timeout);
-  }, [employees, shifts, configs, isAuthenticated, isAppReady, pushEverything]);
+  }, [employees, shifts, configs, history, isAuthenticated, isAppReady, pushEverything]);
 
   const handleLogin = (email: string, url: string, key: string) => {
     setUserEmail(email);
@@ -241,7 +259,8 @@ const App: React.FC = () => {
     const sqlScript = `CREATE TABLE IF NOT EXISTS profiles (email TEXT PRIMARY KEY, bot_token TEXT, bot_username TEXT, updated_at TIMESTAMP WITH TIME ZONE);
 CREATE TABLE IF NOT EXISTS employees (id TEXT PRIMARY KEY, name TEXT, username TEXT, telegram_id TEXT, role TEXT, shift_id TEXT, status TEXT, owner_email TEXT);
 CREATE TABLE IF NOT EXISTS shifts (id TEXT PRIMARY KEY, name TEXT, start_time TEXT, end_time TEXT, category TEXT, description TEXT, owner_email TEXT);
-CREATE TABLE IF NOT EXISTS configs (type TEXT, max_minutes INTEGER, max_per_day INTEGER, response_template TEXT, warning_template TEXT, owner_email TEXT, PRIMARY KEY (type, owner_email));`;
+CREATE TABLE IF NOT EXISTS configs (type TEXT, max_minutes INTEGER, max_per_day INTEGER, response_template TEXT, warning_template TEXT, owner_email TEXT, PRIMARY KEY (type, owner_email));
+CREATE TABLE IF NOT EXISTS history (id TEXT PRIMARY KEY, employee_name TEXT, type TEXT, time_out TEXT, time_in TEXT, date TEXT, status TEXT, owner_email TEXT);`;
 
     return (
       <div className="fixed inset-0 bg-[#020617] flex items-center justify-center p-6 z-[9999]">
@@ -252,7 +271,7 @@ CREATE TABLE IF NOT EXISTS configs (type TEXT, max_minutes INTEGER, max_per_day 
           <div className="space-y-4">
             <h2 className="text-4xl font-black text-slate-900 italic uppercase">Database Belum Siap</h2>
             <p className="text-slate-500 text-sm font-medium leading-relaxed">
-              Koneksi sukses, tapi tabel Zenith tidak ditemukan. Salin script di bawah dan jalankan di SQL Editor Supabase Anda.
+              Tabel database belum lengkap. Salin script di bawah dan jalankan di SQL Editor Supabase Anda agar sinkronisasi bisa berjalan.
             </p>
           </div>
           <div className="grid gap-4">
@@ -276,12 +295,6 @@ CREATE TABLE IF NOT EXISTS configs (type TEXT, max_minutes INTEGER, max_per_day 
             >
               BUKA SQL EDITOR SUPABASE <ExternalLink size={20} />
             </a>
-            <button 
-              onClick={() => { setIsAppReady(true); setSyncStatus('synced'); }}
-              className="mt-4 text-[10px] font-black text-slate-400 uppercase tracking-widest hover:text-indigo-600"
-            >
-              Sudah dijalankan? Masuk ke Dashboard
-            </button>
           </div>
         </div>
       </div>
