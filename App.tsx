@@ -17,7 +17,7 @@ import { createClient } from '@supabase/supabase-js';
 import { 
   ShieldCheck, RefreshCw, AlertTriangle, Cloud, Loader2, 
   DatabaseZap, CheckCircle2, XCircle, UploadCloud, DownloadCloud, 
-  Database, Zap, Lock
+  Database, Zap, Lock, WifiOff, ServerCrash
 } from 'lucide-react';
 import { MOCK_BOT_ALIASES, MOCK_LEAVE_CONFIGS, MOCK_SHIFTS } from './constants';
 
@@ -29,6 +29,7 @@ const App: React.FC = () => {
   // SYNC STATES
   const [isSyncing, setIsSyncing] = useState(false);
   const [isAppReady, setIsAppReady] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
   const [syncStep, setSyncStep] = useState('');
   const [syncStatus, setSyncStatus] = useState<'synced' | 'syncing' | 'error'>('synced');
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | null }>({ message: '', type: null });
@@ -42,10 +43,17 @@ const App: React.FC = () => {
   const [history, setHistory] = useState<LeaveHistory[]>([]);
   const [configs, setConfigs] = useState<LeaveConfig[]>(MOCK_LEAVE_CONFIGS);
   const [aliases, setAliases] = useState<BotAlias[]>(MOCK_BOT_ALIASES);
+  
   const [botSettings, setBotSettings] = useState<BotSettings>(() => {
-    const saved = localStorage.getItem(`zenith_bot_settings_${userEmail.replace(/[@.]/g, '_')}`);
+    const email = localStorage.getItem('zenith_active_session') || '';
+    const emailKey = email.replace(/[@.]/g, '_');
+    const saved = localStorage.getItem(`zenith_bot_settings_${emailKey}`);
+    const cloudUrl = localStorage.getItem(`zenith_cloud_url_${emailKey}`);
+    const cloudKey = localStorage.getItem(`zenith_cloud_key_${emailKey}`);
+    
     return saved ? JSON.parse(saved) : {
-      botToken: '', groupId: '', botUsername: '@ZenithBot', isOnline: false, serverUrl: '', supabaseUrl: '', supabaseKey: ''
+      botToken: '', groupId: '', botUsername: '@ZenithBot', isOnline: false, serverUrl: '', 
+      supabaseUrl: cloudUrl || '', supabaseKey: cloudKey || ''
     };
   });
 
@@ -55,27 +63,34 @@ const App: React.FC = () => {
   };
 
   const getSupabase = useCallback(() => {
-    const sUrl = botSettings.supabaseUrl || localStorage.getItem(`zenith_cloud_url_${userEmail.replace(/[@.]/g, '_')}`);
-    const sKey = botSettings.supabaseKey || localStorage.getItem(`zenith_cloud_key_${userEmail.replace(/[@.]/g, '_')}`);
+    const emailKey = userEmail.replace(/[@.]/g, '_');
+    const sUrl = localStorage.getItem(`zenith_cloud_url_${emailKey}`) || botSettings.supabaseUrl;
+    const sKey = localStorage.getItem(`zenith_cloud_key_${emailKey}`) || botSettings.supabaseKey;
+    
     if (!sUrl || !sKey) return null;
     return createClient(sUrl, sKey);
   }, [botSettings.supabaseUrl, botSettings.supabaseKey, userEmail]);
 
-  // --- ENGINE: PULL (TARIK DATA) ---
   const pullEverything = useCallback(async (email: string) => {
     const supabase = getSupabase();
     if (!supabase) {
-      setIsAppReady(true);
+      // Jika sudah login tapi tidak ada kredensial Supabase (biasanya setelah hapus cache)
+      // Paksa logout agar user login ulang lewat Cloud Registration
+      console.warn("Kredensial Cloud hilang. Mengarahkan ke login.");
+      setIsAuthenticated(false);
+      localStorage.removeItem('zenith_active_session');
       return;
     }
 
     setIsSyncing(true);
+    setSyncError(null);
     setSyncStatus('syncing');
-    setSyncStep('Cloud Handshake...');
+    setSyncStep('Sinkronisasi Cloud...');
 
     try {
-      setSyncStep('Sync Profil Bot...');
-      const { data: prof } = await supabase.from('profiles').select('*').eq('email', email).maybeSingle();
+      setSyncStep('Memuat Profil...');
+      const { data: prof, error: pErr } = await supabase.from('profiles').select('*').eq('email', email).maybeSingle();
+      if (pErr) throw pErr;
       if (prof) {
         setBotSettings(prev => ({
           ...prev,
@@ -84,8 +99,9 @@ const App: React.FC = () => {
         }));
       }
 
-      setSyncStep('Sync Database Karyawan...');
-      const { data: emp } = await supabase.from('employees').select('*').eq('owner_email', email);
+      setSyncStep('Mengunduh Data Karyawan...');
+      const { data: emp, error: eErr } = await supabase.from('employees').select('*').eq('owner_email', email);
+      if (eErr) throw eErr;
       if (emp) {
         setEmployees(emp.map(d => ({
           id: d.id, name: d.name, username: d.username, telegramId: d.telegram_id,
@@ -93,8 +109,9 @@ const App: React.FC = () => {
         })));
       }
 
-      setSyncStep('Sync Jadwal Shift...');
-      const { data: shft } = await supabase.from('shifts').select('*').eq('owner_email', email);
+      setSyncStep('Sinkronisasi Shift...');
+      const { data: shft, error: sErr } = await supabase.from('shifts').select('*').eq('owner_email', email);
+      if (sErr) throw sErr;
       if (shft && shft.length > 0) {
         setShifts(shft.map(d => ({
           id: d.id, name: d.name, startTime: d.start_time, endTime: d.end_time,
@@ -102,8 +119,9 @@ const App: React.FC = () => {
         })));
       }
 
-      setSyncStep('Sync Konfigurasi Izin...');
-      const { data: cfgs } = await supabase.from('configs').select('*').eq('owner_email', email);
+      setSyncStep('Mengunduh Konfigurasi...');
+      const { data: cfgs, error: cErr } = await supabase.from('configs').select('*').eq('owner_email', email);
+      if (cErr) throw cErr;
       if (cfgs && cfgs.length > 0) {
         setConfigs(cfgs.map(d => ({
           type: d.type, maxMinutes: d.max_minutes, maxPerDay: d.max_per_day,
@@ -112,35 +130,38 @@ const App: React.FC = () => {
       }
 
       setSyncStatus('synced');
-      setSyncStep('Semua Sistem Siap!');
-      lastSyncHash.current = JSON.stringify({ employees, shifts, configs });
+      setSyncStep('Sinkronisasi Selesai!');
+      lastSyncHash.current = JSON.stringify({ 
+        employees: emp || [], 
+        shifts: shft || (emp && emp.length > 0 ? [] : MOCK_SHIFTS), 
+        configs: cfgs || MOCK_LEAVE_CONFIGS 
+      });
       hasInitialPullDone.current = true;
       setTimeout(() => {
         setIsSyncing(false);
         setIsAppReady(true);
       }, 1000);
-    } catch (err) {
-      console.error(err);
+    } catch (err: any) {
+      console.error("Critical Pull Error:", err);
       setSyncStatus('error');
+      setSyncError(err.message || "Gagal menarik data. Periksa SQL Editor di Supabase.");
       setIsSyncing(false);
-      setIsAppReady(true);
-      showToast("Gagal terhubung ke Cloud. Gunakan Offline Mode.", "error");
     }
-  }, [getSupabase, employees, shifts, configs]);
+  }, [getSupabase]);
 
-  // --- ENGINE: PUSH (SIMPAN DATA) ---
   const pushEverything = useCallback(async (isManual = false) => {
     const supabase = getSupabase();
     if (!supabase) return;
 
     if (isManual) {
       setIsSyncing(true);
-      setSyncStep('Manual Cloud Push...');
+      setSyncStep('Menyimpan ke Cloud...');
     }
     setSyncStatus('syncing');
 
     try {
-      // 1. Profile
+      const emailKey = userEmail.replace(/[@.]/g, '_');
+      
       await supabase.from('profiles').upsert({
         email: userEmail,
         bot_token: botSettings.botToken,
@@ -148,7 +169,6 @@ const App: React.FC = () => {
         updated_at: new Date().toISOString()
       }, { onConflict: 'email' });
 
-      // 2. Employees
       if (employees.length > 0) {
         await supabase.from('employees').upsert(
           employees.map(e => ({
@@ -158,51 +178,54 @@ const App: React.FC = () => {
         );
       }
 
-      // 3. Shifts
-      await supabase.from('shifts').upsert(
-        shifts.map(s => ({
-          id: s.id, name: s.name, start_time: s.startTime, end_time: s.endTime,
-          category: s.category, description: s.description, owner_email: userEmail
-        })), { onConflict: 'id' }
-      );
+      if (shifts.length > 0) {
+        await supabase.from('shifts').upsert(
+          shifts.map(s => ({
+            id: s.id, name: s.name, start_time: s.startTime, end_time: s.endTime,
+            category: s.category, description: s.description, owner_email: userEmail
+          })), { onConflict: 'id' }
+        );
+      }
 
-      // 4. Configs
-      await supabase.from('configs').upsert(
-        configs.map(c => ({
-          type: c.type, max_minutes: c.maxMinutes, max_per_day: c.maxPerDay,
-          response_template: c.responseTemplate, warning_template: c.warningTemplate, owner_email: userEmail
-        })), { onConflict: 'type,owner_email' }
-      );
+      if (configs.length > 0) {
+        await supabase.from('configs').upsert(
+          configs.map(c => ({
+            type: c.type, max_minutes: c.maxMinutes, max_per_day: c.maxPerDay,
+            response_template: c.responseTemplate, warning_template: c.warningTemplate, owner_email: userEmail
+          })), { onConflict: 'type,owner_email' }
+        );
+      }
 
       setSyncStatus('synced');
       lastSyncHash.current = JSON.stringify({ employees, shifts, configs });
+      localStorage.setItem(`zenith_bot_settings_${emailKey}`, JSON.stringify(botSettings));
+
       if (isManual) {
-        setSyncStep('Database Teramankan!');
-        showToast("Database Sinkron ke Cloud!", "success");
+        setSyncStep('Tersimpan di Cloud!');
+        showToast("Sinkronisasi Berhasil!", "success");
         setTimeout(() => setIsSyncing(false), 1000);
       }
     } catch (err) {
-      console.error(err);
+      console.error("Push Error:", err);
       setSyncStatus('error');
       if (isManual) setIsSyncing(false);
+      showToast("Gagal menyimpan ke Cloud!", "error");
     }
   }, [getSupabase, employees, shifts, configs, botSettings, userEmail]);
 
-  // --- AUTO SYNC LOGIC ---
   useEffect(() => {
-    if (!isAuthenticated || !hasInitialPullDone.current) return;
+    if (!isAuthenticated || !hasInitialPullDone.current || !isAppReady) return;
     
     const currentHash = JSON.stringify({ employees, shifts, configs });
     if (currentHash === lastSyncHash.current) return;
 
     const timeout = setTimeout(() => {
       pushEverything(false);
-    }, 2000); // Auto-push 2 detik setelah perubahan
+    }, 2500);
 
     return () => clearTimeout(timeout);
-  }, [employees, shifts, configs, isAuthenticated, pushEverything]);
+  }, [employees, shifts, configs, isAuthenticated, isAppReady, pushEverything]);
 
-  // Initial Sync on Mount
   useEffect(() => {
     if (isAuthenticated && !hasInitialPullDone.current) {
       pullEverything(userEmail);
@@ -210,15 +233,22 @@ const App: React.FC = () => {
   }, [isAuthenticated, userEmail, pullEverything]);
 
   const handleLogin = (email: string, url?: string, key?: string) => {
+    const emailKey = email.replace(/[@.]/g, '_');
     setUserEmail(email);
     setIsAuthenticated(true);
     localStorage.setItem('zenith_active_session', email);
+    
     if (url && key) {
-      localStorage.setItem(`zenith_cloud_url_${email.replace(/[@.]/g, '_')}`, url);
-      localStorage.setItem(`zenith_cloud_key_${email.replace(/[@.]/g, '_')}`, key);
-      setBotSettings(p => ({ ...p, supabaseUrl: url, supabaseKey: key }));
+      localStorage.setItem(`zenith_cloud_url_${emailKey}`, url);
+      localStorage.setItem(`zenith_cloud_key_${emailKey}`, key);
+      const knownUsers = JSON.parse(localStorage.getItem('zenith_known_users') || '[]');
+      if (!knownUsers.includes(email)) {
+        knownUsers.push(email);
+        localStorage.setItem('zenith_known_users', JSON.stringify(knownUsers));
+      }
     }
-    // Pull will be triggered by useEffect
+    
+    pullEverything(email);
   };
 
   const handleLogout = () => {
@@ -229,29 +259,55 @@ const App: React.FC = () => {
 
   if (!isAuthenticated) return <Login onLogin={handleLogin} />;
   
-  // SINKRONISASI WAJIB SAAT STARTUP
-  if (!isAppReady && isSyncing) {
+  if (!isAppReady) {
     return (
       <div className="fixed inset-0 bg-[#020617] flex flex-col items-center justify-center p-8 z-[9999]">
-         <div className="bg-white/5 p-20 rounded-[4rem] border border-white/10 flex flex-col items-center gap-12 max-w-lg w-full backdrop-blur-3xl shadow-2xl">
-            <div className="relative">
-               <div className="absolute inset-0 bg-indigo-500 rounded-full animate-ping opacity-20" />
-               <div className="relative w-32 h-32 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-[3rem] flex items-center justify-center shadow-2xl border border-white/20">
-                  <DatabaseZap size={56} className="text-white animate-bounce" />
-               </div>
-            </div>
-            <div className="text-center space-y-4">
-               <h3 className="text-3xl font-black text-white uppercase italic tracking-tighter">Connecting to Cloud</h3>
-               <p className="text-[12px] font-bold text-indigo-400 uppercase tracking-[0.4em] animate-pulse">{syncStep}</p>
-            </div>
-            <div className="w-full h-2 bg-white/5 rounded-full overflow-hidden">
-               <div className="h-full bg-indigo-500 animate-progress" />
-            </div>
-            <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest italic">Zenith Cloud-v4 Handshake</p>
+         <div className="bg-white/5 p-16 md:p-24 rounded-[4rem] border border-white/10 flex flex-col items-center gap-10 max-w-xl w-full backdrop-blur-3xl shadow-2xl text-center">
+            {syncStatus === 'error' ? (
+              <>
+                <div className="w-32 h-32 bg-rose-500/20 rounded-[3rem] flex items-center justify-center border border-rose-500/40">
+                  <ServerCrash size={56} className="text-rose-500 animate-bounce" />
+                </div>
+                <div className="space-y-4">
+                  <h3 className="text-3xl font-black text-white uppercase italic">Koneksi Gagal</h3>
+                  <p className="text-sm text-slate-400 font-medium px-4">{syncError || "Terjadi masalah saat menghubungi database cloud Anda."}</p>
+                </div>
+                <div className="flex flex-col gap-4 w-full">
+                  <button 
+                    onClick={() => pullEverything(userEmail)}
+                    className="w-full bg-rose-600 text-white font-black py-5 rounded-2xl hover:bg-rose-500 transition-all flex items-center justify-center gap-3 uppercase text-[10px] tracking-widest"
+                  >
+                    <RefreshCw size={16} /> Coba Sinkron Ulang
+                  </button>
+                  <button 
+                    onClick={handleLogout}
+                    className="w-full bg-white/5 text-slate-400 font-black py-4 rounded-2xl border border-white/5 hover:bg-white/10 transition-all text-[10px] uppercase tracking-widest"
+                  >
+                    Logout & Ganti Akun
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="relative">
+                   <div className="absolute inset-0 bg-indigo-500 rounded-full animate-ping opacity-20" />
+                   <div className="relative w-28 h-28 bg-gradient-to-br from-indigo-500 to-indigo-800 rounded-[2.5rem] flex items-center justify-center shadow-2xl border border-white/10">
+                      <DatabaseZap size={48} className="text-white animate-pulse" />
+                   </div>
+                </div>
+                <div className="space-y-3">
+                   <h3 className="text-2xl font-black text-white uppercase italic tracking-tighter">Memulihkan Sesi</h3>
+                   <p className="text-[10px] font-black text-indigo-400 uppercase tracking-[0.4em] animate-pulse">{syncStep}</p>
+                </div>
+                <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden">
+                   <div className="h-full bg-indigo-500 animate-progress" />
+                </div>
+              </>
+            )}
          </div>
          <style>{`
           @keyframes progress { 0% { width: 0%; } 50% { width: 70%; } 100% { width: 100%; } }
-          .animate-progress { animation: progress 3s infinite ease-in-out; }
+          .animate-progress { animation: progress 2s infinite ease-in-out; }
          `}</style>
       </div>
     );
@@ -262,8 +318,6 @@ const App: React.FC = () => {
       <Sidebar activePage={activePage} setActivePage={setActivePage} onLogout={handleLogout} />
       
       <main className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden relative">
-        
-        {/* TOAST SYSTEM */}
         {toast.type && (
           <div className="fixed top-28 right-12 z-[1000] animate-in slide-in-from-right-10 duration-500">
              <div className={`px-8 py-5 rounded-[2.5rem] shadow-2xl flex items-center gap-4 border ${
@@ -275,9 +329,8 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* OVERLAY SYNC SAAT MANUAL PUSH/PULL */}
         {isSyncing && isAppReady && (
-          <div className="fixed inset-0 bg-indigo-900/40 backdrop-blur-sm z-[999] flex items-center justify-center animate-in fade-in duration-300">
+          <div className="fixed inset-0 bg-[#020617]/60 backdrop-blur-sm z-[999] flex items-center justify-center animate-in fade-in duration-300">
              <div className="bg-white p-12 rounded-[3rem] shadow-2xl flex items-center gap-6 border border-indigo-100">
                 <RefreshCw size={24} className="text-indigo-600 animate-spin" />
                 <span className="text-sm font-black text-slate-800 uppercase tracking-widest">{syncStep}</span>
@@ -285,7 +338,6 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* GLOBAL HEADER */}
         <div className="bg-white px-12 py-5 border-b border-slate-200/60 flex justify-between items-center shadow-sm z-20">
            <div className="flex items-center gap-4">
               <div className={`flex items-center gap-3 px-5 py-2.5 rounded-2xl border transition-all duration-700 ${
@@ -295,7 +347,7 @@ const App: React.FC = () => {
               }`}>
                  {syncStatus === 'syncing' ? <RefreshCw size={14} className="animate-spin" /> : syncStatus === 'error' ? <AlertTriangle size={14} /> : <Database size={14} />}
                  <span className="text-[10px] font-black uppercase tracking-widest">
-                   {syncStatus === 'syncing' ? 'SYNCING...' : syncStatus === 'error' ? 'CLOUD ERROR' : 'CLOUD CONNECTED'}
+                   {syncStatus === 'syncing' ? 'SYNCING...' : syncStatus === 'error' ? 'CLOUD OFFLINE' : 'CLOUD CONNECTED'}
                  </span>
               </div>
            </div>
@@ -319,7 +371,7 @@ const App: React.FC = () => {
 
               <div className="flex items-center gap-4 pl-6 border-l border-slate-100">
                  <div className="text-right">
-                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none">Cloud Admin</p>
+                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none">Administrator</p>
                     <p className="text-[12px] font-bold text-slate-800 mt-1.5">{userEmail}</p>
                  </div>
                  <div className="w-12 h-12 bg-indigo-600 rounded-2xl flex items-center justify-center text-white text-sm font-black shadow-xl">
