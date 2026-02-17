@@ -26,7 +26,6 @@ const App: React.FC = () => {
   const [userEmail, setUserEmail] = useState<string>(() => localStorage.getItem('zenith_active_session') || '');
   const [activePage, setActivePage] = useState<PageType>('dashboard');
   
-  // SYNC STATES
   const [isSyncing, setIsSyncing] = useState(false);
   const [isAppReady, setIsAppReady] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
@@ -37,7 +36,6 @@ const App: React.FC = () => {
   const hasInitialPullDone = useRef(false);
   const lastSyncHash = useRef<string>('');
 
-  // --- STATE DATA ---
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [shifts, setShifts] = useState<Shift[]>(MOCK_SHIFTS);
   const [history, setHistory] = useState<LeaveHistory[]>([]);
@@ -50,7 +48,6 @@ const App: React.FC = () => {
     const saved = localStorage.getItem(`zenith_bot_settings_${emailKey}`);
     const cloudUrl = localStorage.getItem(`zenith_cloud_url_${emailKey}`);
     const cloudKey = localStorage.getItem(`zenith_cloud_key_${emailKey}`);
-    
     return saved ? JSON.parse(saved) : {
       botToken: '', groupId: '', botUsername: '@ZenithBot', isOnline: false, serverUrl: '', 
       supabaseUrl: cloudUrl || '', supabaseKey: cloudKey || ''
@@ -66,17 +63,14 @@ const App: React.FC = () => {
     const emailKey = userEmail.replace(/[@.]/g, '_');
     const sUrl = localStorage.getItem(`zenith_cloud_url_${emailKey}`) || botSettings.supabaseUrl;
     const sKey = localStorage.getItem(`zenith_cloud_key_${emailKey}`) || botSettings.supabaseKey;
-    
     if (!sUrl || !sKey) return null;
     return createClient(sUrl, sKey);
   }, [botSettings.supabaseUrl, botSettings.supabaseKey, userEmail]);
 
+  // --- OPTIMIZED: PARALLEL PULL ---
   const pullEverything = useCallback(async (email: string) => {
     const supabase = getSupabase();
     if (!supabase) {
-      // Jika sudah login tapi tidak ada kredensial Supabase (biasanya setelah hapus cache)
-      // Paksa logout agar user login ulang lewat Cloud Registration
-      console.warn("Kredensial Cloud hilang. Mengarahkan ke login.");
       setIsAuthenticated(false);
       localStorage.removeItem('zenith_active_session');
       return;
@@ -85,66 +79,67 @@ const App: React.FC = () => {
     setIsSyncing(true);
     setSyncError(null);
     setSyncStatus('syncing');
-    setSyncStep('Sinkronisasi Cloud...');
+    setSyncStep('Fast Syncing...');
 
     try {
-      setSyncStep('Memuat Profil...');
-      const { data: prof, error: pErr } = await supabase.from('profiles').select('*').eq('email', email).maybeSingle();
-      if (pErr) throw pErr;
-      if (prof) {
+      // Menjalankan semua request sekaligus (Paralel)
+      const [profRes, empRes, shftRes, cfgsRes] = await Promise.all([
+        supabase.from('profiles').select('*').eq('email', email).maybeSingle(),
+        supabase.from('employees').select('*').eq('owner_email', email),
+        supabase.from('shifts').select('*').eq('owner_email', email),
+        supabase.from('configs').select('*').eq('owner_email', email)
+      ]);
+
+      if (profRes.error) throw profRes.error;
+      if (empRes.error) throw empRes.error;
+      if (shftRes.error) throw shftRes.error;
+      if (cfgsRes.error) throw cfgsRes.error;
+
+      // Update States secara instan
+      if (profRes.data) {
         setBotSettings(prev => ({
           ...prev,
-          botToken: prof.bot_token || prev.botToken,
-          botUsername: prof.bot_username || prev.botUsername,
+          botToken: profRes.data.bot_token || prev.botToken,
+          botUsername: profRes.data.bot_username || prev.botUsername,
         }));
       }
 
-      setSyncStep('Mengunduh Data Karyawan...');
-      const { data: emp, error: eErr } = await supabase.from('employees').select('*').eq('owner_email', email);
-      if (eErr) throw eErr;
-      if (emp) {
-        setEmployees(emp.map(d => ({
+      if (empRes.data) {
+        setEmployees(empRes.data.map((d: any) => ({
           id: d.id, name: d.name, username: d.username, telegramId: d.telegram_id,
           role: d.role, shiftId: d.shift_id, status: d.status
         })));
       }
 
-      setSyncStep('Sinkronisasi Shift...');
-      const { data: shft, error: sErr } = await supabase.from('shifts').select('*').eq('owner_email', email);
-      if (sErr) throw sErr;
-      if (shft && shft.length > 0) {
-        setShifts(shft.map(d => ({
+      if (shftRes.data && shftRes.data.length > 0) {
+        setShifts(shftRes.data.map((d: any) => ({
           id: d.id, name: d.name, startTime: d.start_time, endTime: d.end_time,
           category: d.category, description: d.description
         })));
       }
 
-      setSyncStep('Mengunduh Konfigurasi...');
-      const { data: cfgs, error: cErr } = await supabase.from('configs').select('*').eq('owner_email', email);
-      if (cErr) throw cErr;
-      if (cfgs && cfgs.length > 0) {
-        setConfigs(cfgs.map(d => ({
+      if (cfgsRes.data && cfgsRes.data.length > 0) {
+        setConfigs(cfgsRes.data.map((d: any) => ({
           type: d.type, maxMinutes: d.max_minutes, maxPerDay: d.max_per_day,
           responseTemplate: d.response_template, warningTemplate: d.warning_template
         })));
       }
 
       setSyncStatus('synced');
-      setSyncStep('Sinkronisasi Selesai!');
       lastSyncHash.current = JSON.stringify({ 
-        employees: emp || [], 
-        shifts: shft || (emp && emp.length > 0 ? [] : MOCK_SHIFTS), 
-        configs: cfgs || MOCK_LEAVE_CONFIGS 
+        employees: empRes.data || [], 
+        shifts: shftRes.data || [], 
+        configs: cfgsRes.data || [] 
       });
       hasInitialPullDone.current = true;
-      setTimeout(() => {
-        setIsSyncing(false);
-        setIsAppReady(true);
-      }, 1000);
+      
+      // Langsung buka aplikasi, tanpa setTimeout
+      setIsSyncing(false);
+      setIsAppReady(true);
     } catch (err: any) {
       console.error("Critical Pull Error:", err);
       setSyncStatus('error');
-      setSyncError(err.message || "Gagal menarik data. Periksa SQL Editor di Supabase.");
+      setSyncError(err.message || "Koneksi Cloud Terputus.");
       setIsSyncing(false);
     }
   }, [getSupabase]);
@@ -152,84 +147,49 @@ const App: React.FC = () => {
   const pushEverything = useCallback(async (isManual = false) => {
     const supabase = getSupabase();
     if (!supabase) return;
-
-    if (isManual) {
-      setIsSyncing(true);
-      setSyncStep('Menyimpan ke Cloud...');
-    }
+    if (isManual) { setIsSyncing(true); setSyncStep('Cloud Saving...'); }
     setSyncStatus('syncing');
 
     try {
       const emailKey = userEmail.replace(/[@.]/g, '_');
-      
-      await supabase.from('profiles').upsert({
-        email: userEmail,
-        bot_token: botSettings.botToken,
-        bot_username: botSettings.botUsername,
-        updated_at: new Date().toISOString()
-      }, { onConflict: 'email' });
-
-      if (employees.length > 0) {
-        await supabase.from('employees').upsert(
-          employees.map(e => ({
-            id: e.id, name: e.name, username: e.username, telegram_id: e.telegramId,
-            role: e.role, shift_id: e.shiftId, status: e.status, owner_email: userEmail
-          })), { onConflict: 'id' }
-        );
-      }
-
-      if (shifts.length > 0) {
-        await supabase.from('shifts').upsert(
-          shifts.map(s => ({
-            id: s.id, name: s.name, start_time: s.startTime, end_time: s.endTime,
-            category: s.category, description: s.description, owner_email: userEmail
-          })), { onConflict: 'id' }
-        );
-      }
-
-      if (configs.length > 0) {
-        await supabase.from('configs').upsert(
-          configs.map(c => ({
-            type: c.type, max_minutes: c.maxMinutes, max_per_day: c.maxPerDay,
-            response_template: c.responseTemplate, warning_template: c.warningTemplate, owner_email: userEmail
-          })), { onConflict: 'type,owner_email' }
-        );
-      }
+      await Promise.all([
+        supabase.from('profiles').upsert({
+          email: userEmail, bot_token: botSettings.botToken, bot_username: botSettings.botUsername, updated_at: new Date().toISOString()
+        }, { onConflict: 'email' }),
+        employees.length > 0 ? supabase.from('employees').upsert(employees.map(e => ({
+          id: e.id, name: e.name, username: e.username, telegram_id: e.telegramId,
+          role: e.role, shift_id: e.shiftId, status: e.status, owner_email: userEmail
+        })), { onConflict: 'id' }) : Promise.resolve(),
+        shifts.length > 0 ? supabase.from('shifts').upsert(shifts.map(s => ({
+          id: s.id, name: s.name, start_time: s.startTime, end_time: s.endTime,
+          category: s.category, description: s.description, owner_email: userEmail
+        })), { onConflict: 'id' }) : Promise.resolve(),
+        configs.length > 0 ? supabase.from('configs').upsert(configs.map(c => ({
+          type: c.type, max_minutes: c.maxMinutes, max_per_day: c.maxPerDay,
+          response_template: c.responseTemplate, warning_template: c.warningTemplate, owner_email: userEmail
+        })), { onConflict: 'type,owner_email' }) : Promise.resolve()
+      ]);
 
       setSyncStatus('synced');
       lastSyncHash.current = JSON.stringify({ employees, shifts, configs });
       localStorage.setItem(`zenith_bot_settings_${emailKey}`, JSON.stringify(botSettings));
-
-      if (isManual) {
-        setSyncStep('Tersimpan di Cloud!');
-        showToast("Sinkronisasi Berhasil!", "success");
-        setTimeout(() => setIsSyncing(false), 1000);
-      }
+      if (isManual) { showToast("Saved to Cloud!", "success"); setIsSyncing(false); }
     } catch (err) {
-      console.error("Push Error:", err);
       setSyncStatus('error');
       if (isManual) setIsSyncing(false);
-      showToast("Gagal menyimpan ke Cloud!", "error");
     }
   }, [getSupabase, employees, shifts, configs, botSettings, userEmail]);
 
   useEffect(() => {
     if (!isAuthenticated || !hasInitialPullDone.current || !isAppReady) return;
-    
     const currentHash = JSON.stringify({ employees, shifts, configs });
     if (currentHash === lastSyncHash.current) return;
-
-    const timeout = setTimeout(() => {
-      pushEverything(false);
-    }, 2500);
-
+    const timeout = setTimeout(() => pushEverything(false), 3000);
     return () => clearTimeout(timeout);
   }, [employees, shifts, configs, isAuthenticated, isAppReady, pushEverything]);
 
   useEffect(() => {
-    if (isAuthenticated && !hasInitialPullDone.current) {
-      pullEverything(userEmail);
-    }
+    if (isAuthenticated && !hasInitialPullDone.current) pullEverything(userEmail);
   }, [isAuthenticated, userEmail, pullEverything]);
 
   const handleLogin = (email: string, url?: string, key?: string) => {
@@ -237,7 +197,6 @@ const App: React.FC = () => {
     setUserEmail(email);
     setIsAuthenticated(true);
     localStorage.setItem('zenith_active_session', email);
-    
     if (url && key) {
       localStorage.setItem(`zenith_cloud_url_${emailKey}`, url);
       localStorage.setItem(`zenith_cloud_key_${emailKey}`, key);
@@ -247,7 +206,6 @@ const App: React.FC = () => {
         localStorage.setItem('zenith_known_users', JSON.stringify(knownUsers));
       }
     }
-    
     pullEverything(email);
   };
 
@@ -270,45 +228,27 @@ const App: React.FC = () => {
                 </div>
                 <div className="space-y-4">
                   <h3 className="text-3xl font-black text-white uppercase italic">Koneksi Gagal</h3>
-                  <p className="text-sm text-slate-400 font-medium px-4">{syncError || "Terjadi masalah saat menghubungi database cloud Anda."}</p>
-                </div>
-                <div className="flex flex-col gap-4 w-full">
-                  <button 
-                    onClick={() => pullEverything(userEmail)}
-                    className="w-full bg-rose-600 text-white font-black py-5 rounded-2xl hover:bg-rose-500 transition-all flex items-center justify-center gap-3 uppercase text-[10px] tracking-widest"
-                  >
-                    <RefreshCw size={16} /> Coba Sinkron Ulang
+                  <button onClick={() => pullEverything(userEmail)} className="w-full bg-rose-600 text-white font-black py-5 rounded-2xl flex items-center justify-center gap-3 uppercase text-[10px] tracking-widest">
+                    <RefreshCw size={16} /> Coba Ulang
                   </button>
-                  <button 
-                    onClick={handleLogout}
-                    className="w-full bg-white/5 text-slate-400 font-black py-4 rounded-2xl border border-white/5 hover:bg-white/10 transition-all text-[10px] uppercase tracking-widest"
-                  >
-                    Logout & Ganti Akun
-                  </button>
+                  <button onClick={handleLogout} className="w-full text-slate-400 text-[10px] uppercase font-black">Keluar</button>
                 </div>
               </>
             ) : (
               <>
                 <div className="relative">
                    <div className="absolute inset-0 bg-indigo-500 rounded-full animate-ping opacity-20" />
-                   <div className="relative w-28 h-28 bg-gradient-to-br from-indigo-500 to-indigo-800 rounded-[2.5rem] flex items-center justify-center shadow-2xl border border-white/10">
-                      <DatabaseZap size={48} className="text-white animate-pulse" />
+                   <div className="relative w-24 h-24 bg-gradient-to-br from-indigo-500 to-indigo-800 rounded-[2rem] flex items-center justify-center shadow-2xl border border-white/10">
+                      <DatabaseZap size={40} className="text-white animate-pulse" />
                    </div>
                 </div>
                 <div className="space-y-3">
-                   <h3 className="text-2xl font-black text-white uppercase italic tracking-tighter">Memulihkan Sesi</h3>
-                   <p className="text-[10px] font-black text-indigo-400 uppercase tracking-[0.4em] animate-pulse">{syncStep}</p>
-                </div>
-                <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden">
-                   <div className="h-full bg-indigo-500 animate-progress" />
+                   <h3 className="text-2xl font-black text-white uppercase italic tracking-tighter">Memuat Data...</h3>
+                   <p className="text-[10px] font-black text-indigo-400 uppercase tracking-[0.4em] animate-pulse">Zenith Engine v4.9</p>
                 </div>
               </>
             )}
          </div>
-         <style>{`
-          @keyframes progress { 0% { width: 0%; } 50% { width: 70%; } 100% { width: 100%; } }
-          .animate-progress { animation: progress 2s infinite ease-in-out; }
-         `}</style>
       </div>
     );
   }
@@ -316,71 +256,27 @@ const App: React.FC = () => {
   return (
     <div className="flex min-h-screen bg-[#f8f9fd] font-sans">
       <Sidebar activePage={activePage} setActivePage={setActivePage} onLogout={handleLogout} />
-      
       <main className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden relative">
         {toast.type && (
-          <div className="fixed top-28 right-12 z-[1000] animate-in slide-in-from-right-10 duration-500">
-             <div className={`px-8 py-5 rounded-[2.5rem] shadow-2xl flex items-center gap-4 border ${
-               toast.type === 'success' ? 'bg-emerald-600 border-emerald-400 text-white' : 'bg-rose-600 border-rose-400 text-white'
-             }`}>
-                {toast.type === 'success' ? <CheckCircle2 size={24} /> : <XCircle size={24} />}
-                <p className="text-xs font-black italic uppercase tracking-widest">{toast.message}</p>
+          <div className="fixed top-28 right-12 z-[1000] animate-in slide-in-from-right-10">
+             <div className={`px-8 py-5 rounded-[2.5rem] shadow-2xl flex items-center gap-4 border ${toast.type === 'success' ? 'bg-emerald-600' : 'bg-rose-600'} text-white`}>
+                <CheckCircle2 size={24} /> <p className="text-xs font-black italic uppercase tracking-widest">{toast.message}</p>
              </div>
           </div>
         )}
-
-        {isSyncing && isAppReady && (
-          <div className="fixed inset-0 bg-[#020617]/60 backdrop-blur-sm z-[999] flex items-center justify-center animate-in fade-in duration-300">
-             <div className="bg-white p-12 rounded-[3rem] shadow-2xl flex items-center gap-6 border border-indigo-100">
-                <RefreshCw size={24} className="text-indigo-600 animate-spin" />
-                <span className="text-sm font-black text-slate-800 uppercase tracking-widest">{syncStep}</span>
-             </div>
-          </div>
-        )}
-
         <div className="bg-white px-12 py-5 border-b border-slate-200/60 flex justify-between items-center shadow-sm z-20">
-           <div className="flex items-center gap-4">
-              <div className={`flex items-center gap-3 px-5 py-2.5 rounded-2xl border transition-all duration-700 ${
-                syncStatus === 'syncing' ? 'bg-indigo-50 border-indigo-200 text-indigo-500' : 
-                syncStatus === 'error' ? 'bg-rose-50 border-rose-200 text-rose-500' : 
-                'bg-emerald-50 border-emerald-200 text-emerald-600 shadow-lg shadow-emerald-500/10'
-              }`}>
-                 {syncStatus === 'syncing' ? <RefreshCw size={14} className="animate-spin" /> : syncStatus === 'error' ? <AlertTriangle size={14} /> : <Database size={14} />}
-                 <span className="text-[10px] font-black uppercase tracking-widest">
-                   {syncStatus === 'syncing' ? 'SYNCING...' : syncStatus === 'error' ? 'CLOUD OFFLINE' : 'CLOUD CONNECTED'}
-                 </span>
-              </div>
+           <div className={`flex items-center gap-3 px-5 py-2.5 rounded-2xl border transition-all ${syncStatus === 'syncing' ? 'bg-indigo-50 text-indigo-500' : 'bg-emerald-50 text-emerald-600'}`}>
+              <Database size={14} /> <span className="text-[10px] font-black uppercase tracking-widest">{syncStatus === 'syncing' ? 'SYNCING...' : 'CLOUD READY'}</span>
            </div>
-           
            <div className="flex items-center gap-4">
-              <div className="flex items-center gap-2 bg-slate-50 p-1.5 rounded-2xl border border-slate-100 mr-4">
-                 <button 
-                  onClick={() => pullEverything(userEmail)}
-                  className="p-3 text-slate-500 hover:text-indigo-600 hover:bg-white rounded-xl transition-all flex items-center gap-2 text-[9px] font-black uppercase tracking-widest"
-                 >
-                    <DownloadCloud size={16} /> <span className="hidden xl:inline">Refresh Data</span>
-                 </button>
-                 <div className="w-px h-6 bg-slate-200 mx-1" />
-                 <button 
-                  onClick={() => pushEverything(true)}
-                  className="p-3 bg-[#0f172a] text-white rounded-xl transition-all flex items-center gap-2 text-[9px] font-black uppercase tracking-widest hover:bg-black shadow-lg shadow-slate-900/20"
-                 >
-                    <UploadCloud size={16} /> <span className="hidden xl:inline">Save to Cloud</span>
-                 </button>
-              </div>
-
+              <button onClick={() => pullEverything(userEmail)} className="p-3 text-slate-500 hover:text-indigo-600 flex items-center gap-2 text-[9px] font-black uppercase tracking-widest"><DownloadCloud size={16} /> Refresh</button>
+              <button onClick={() => pushEverything(true)} className="p-3 bg-[#0f172a] text-white rounded-xl flex items-center gap-2 text-[9px] font-black uppercase hover:bg-black"><UploadCloud size={16} /> Push</button>
               <div className="flex items-center gap-4 pl-6 border-l border-slate-100">
-                 <div className="text-right">
-                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none">Administrator</p>
-                    <p className="text-[12px] font-bold text-slate-800 mt-1.5">{userEmail}</p>
-                 </div>
-                 <div className="w-12 h-12 bg-indigo-600 rounded-2xl flex items-center justify-center text-white text-sm font-black shadow-xl">
-                    {userEmail.charAt(0).toUpperCase()}
-                 </div>
+                 <div className="text-right"><p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none">Admin</p><p className="text-[12px] font-bold text-slate-800 mt-1.5">{userEmail}</p></div>
+                 <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center text-white text-sm font-black">{userEmail.charAt(0).toUpperCase()}</div>
               </div>
            </div>
         </div>
-
         <div className="flex-1 overflow-y-auto p-12 custom-scrollbar">
           <div className="max-w-[1500px] mx-auto">
             {activePage === 'dashboard' && <Dashboard employees={employees} history={history} shifts={shifts} setHistory={setHistory} configs={configs} />}
