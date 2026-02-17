@@ -14,7 +14,8 @@ export const processBotLogicStream = async (
   userMessage: string, 
   context: BotContext, 
   onChunk: (chunk: string) => void,
-  senderUsername: string = "@user"
+  senderUsername: string = "@user",
+  conflictInfo: string | null = null
 ) => {
   try {
     const apiKey = process.env.API_KEY;
@@ -42,16 +43,23 @@ export const processBotLogicStream = async (
     const config = context.configs.find(c => c.type === identifiedCategory);
     const customTemplate = config?.responseTemplate || "Izin {kategori} diterima. ({durasi} menit)";
 
+    // INSTRUKSI KHUSUS JIKA ADA KONFLIK
+    const conflictPrompt = conflictInfo 
+      ? `KRITIS: Karyawan ini ${conflictInfo}. JANGAN BERIKAN IZIN BARU. Ingatkan dia dengan tegas tapi sopan untuk mengetik 'masuk' terlebih dahulu.`
+      : "";
+
     const systemInstruction = `Anda adalah Zenith HR Bot. User: ${senderUsername}.
     
-    ATURAN:
+    ATURAN UTAMA:
+    ${conflictPrompt ? conflictPrompt : `
     - Jika user minta izin (${foundKeyword || 'merokok, makan, ibadah, toilet'}), balas HANYA: "${customTemplate}"
     - Ganti {kategori} dengan ${identifiedCategory || 'Izin'}
     - Ganti {durasi} dengan ${config?.maxMinutes || 15}
-    - Jika bukan permintaan izin, balas sangat singkat (maks 5 kata).
-    - Bahasa Indonesia sopan.`;
+    `}
+    - Jika user mengetik 'masuk', 'kembali', atau 'done', ucapkan selamat datang kembali dan terima kasih karena tertib.
+    - Jika bukan permintaan izin/kembali, balas sangat singkat (maks 5 kata).
+    - Bahasa Indonesia gaul/kantoran namun tetap profesional.`;
 
-    // Gunakan gemini-3-flash-preview (Kuota lebih besar & lebih cerdas)
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview', 
       contents: [{ role: 'user', parts: [{ text: userMessage }] }],
@@ -70,9 +78,7 @@ export const processBotLogicStream = async (
     const errorMsg = error.message || "";
     
     if (errorMsg.includes('429')) {
-      onChunk("⚠️ [LIMIT TERCAPAI]: Kuota gratis API Gemini Anda sedang penuh. Mohon tunggu 60 detik sebelum mengirim pesan lagi atau gunakan API Key dari akun Google lain.");
-    } else if (errorMsg.includes('403')) {
-      onChunk("❌ [API KEY INVALID]: Kunci API yang Anda masukkan di Vercel salah atau tidak aktif.");
+      onChunk("⚠️ [LIMIT TERCAPAI]: Kuota gratis API Gemini Anda sedang penuh. Mohon tunggu 60 detik.");
     } else {
       onChunk("❌ [AI ERROR]: " + errorMsg);
     }
