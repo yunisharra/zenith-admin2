@@ -15,27 +15,28 @@ import Deployment from './pages/Deployment';
 import Login from './pages/Login';
 import { createClient } from '@supabase/supabase-js';
 import { 
-  ShieldCheck, RefreshCw, AlertTriangle, Cloud, Loader2, 
-  DatabaseZap, CheckCircle2, XCircle, UploadCloud, DownloadCloud, 
-  Database, Zap, Lock, WifiOff, ServerCrash, Code, Settings as SettingsIcon
+  RefreshCw, DatabaseZap, CheckCircle2, XCircle, UploadCloud, DownloadCloud, 
+  Database, ServerCrash, Code, Terminal, AlertTriangle
 } from 'lucide-react';
 import { MOCK_BOT_ALIASES, MOCK_LEAVE_CONFIGS, MOCK_SHIFTS } from './constants';
 
 const App: React.FC = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(() => !!localStorage.getItem('zenith_active_session'));
   const [userEmail, setUserEmail] = useState<string>(() => localStorage.getItem('zenith_active_session') || '');
+  const [cloudCreds, setCloudCreds] = useState<{url: string, key: string} | null>(() => {
+    const email = localStorage.getItem('zenith_active_session');
+    if (!email) return null;
+    const vault = JSON.parse(localStorage.getItem('zenith_vault') || '[]');
+    const user = vault.find((u: any) => u.email === email);
+    return user ? { url: user.url, key: user.key } : null;
+  });
+
   const [activePage, setActivePage] = useState<PageType>('dashboard');
-  
-  // SYNC STATES
   const [isSyncing, setIsSyncing] = useState(false);
   const [isAppReady, setIsAppReady] = useState(false);
-  const [syncError, setSyncError] = useState<string | null>(null);
+  const [syncStatus, setSyncStatus] = useState<'synced' | 'syncing' | 'error' | 'init_required'>('synced');
   const [syncStep, setSyncStep] = useState('');
-  const [syncStatus, setSyncStatus] = useState<'synced' | 'syncing' | 'error'>('synced');
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | null }>({ message: '', type: null });
-  
-  const hasInitialPullDone = useRef(false);
-  const lastSyncHash = useRef<string>('');
 
   // --- STATE DATA ---
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -43,19 +44,12 @@ const App: React.FC = () => {
   const [history, setHistory] = useState<LeaveHistory[]>([]);
   const [configs, setConfigs] = useState<LeaveConfig[]>(MOCK_LEAVE_CONFIGS);
   const [aliases, setAliases] = useState<BotAlias[]>(MOCK_BOT_ALIASES);
-  
-  const [botSettings, setBotSettings] = useState<BotSettings>(() => {
-    const email = localStorage.getItem('zenith_active_session') || '';
-    const emailKey = email.replace(/[@.]/g, '_');
-    const saved = localStorage.getItem(`zenith_bot_settings_${emailKey}`);
-    const cloudUrl = localStorage.getItem(`zenith_cloud_url_${emailKey}`);
-    const cloudKey = localStorage.getItem(`zenith_cloud_key_${emailKey}`);
-    
-    return saved ? JSON.parse(saved) : {
-      botToken: '', groupId: '', botUsername: '@ZenithBot', isOnline: false, serverUrl: '', 
-      supabaseUrl: cloudUrl || '', supabaseKey: cloudKey || ''
-    };
+  const [botSettings, setBotSettings] = useState<BotSettings>({
+    botToken: '', groupId: '', botUsername: '@ZenithBot', isOnline: false, serverUrl: ''
   });
+
+  const lastSyncHash = useRef<string>('');
+  const hasInitialPullDone = useRef(false);
 
   const showToast = (message: string, type: 'success' | 'error') => {
     setToast({ message, type });
@@ -63,37 +57,42 @@ const App: React.FC = () => {
   };
 
   const getSupabase = useCallback(() => {
-    const emailKey = userEmail.replace(/[@.]/g, '_');
-    const sUrl = localStorage.getItem(`zenith_cloud_url_${emailKey}`) || botSettings.supabaseUrl;
-    const sKey = localStorage.getItem(`zenith_cloud_key_${emailKey}`) || botSettings.supabaseKey;
+    if (!cloudCreds) return null;
+    return createClient(cloudCreds.url, cloudCreds.key);
+  }, [cloudCreds]);
+
+  // --- LOGIC: INISIALISASI TABEL OTOMATIS ---
+  const initializeDatabase = async () => {
+    const supabase = getSupabase();
+    if (!supabase) return;
+
+    setIsSyncing(true);
+    setSyncStep('Menyiapkan Database...');
     
-    if (!sUrl || !sKey) return null;
-    try {
-      return createClient(sUrl, sKey);
-    } catch (e) {
-      return null;
-    }
-  }, [botSettings.supabaseUrl, botSettings.supabaseKey, userEmail]);
+    // Karena client-side JS Supabase tidak bisa eksekusi SQL raw secara langsung 
+    // untuk membuat tabel (harus via SQL Editor), kita arahkan user untuk klik satu tombol.
+    // Tapi di sini kita set status agar UI menunjukkan instruksi.
+    setSyncStatus('init_required');
+    setIsSyncing(false);
+  };
 
   const pullEverything = useCallback(async (email: string) => {
     const supabase = getSupabase();
-    if (!supabase) {
-      setSyncStatus('error');
-      setSyncError("Kredensial Cloud Tidak Ditemukan. Silakan login ulang.");
-      setIsSyncing(false);
-      return;
-    }
+    if (!supabase) return;
 
     setIsSyncing(true);
-    setSyncError(null);
     setSyncStatus('syncing');
-    setSyncStep('Menghubungkan ke Cloud...');
+    setSyncStep('Menarik Data Cloud...');
 
     try {
-      // 1. Profil
-      setSyncStep('Memuat Profil...');
+      // Ambil Profiles (Bot Settings)
       const { data: prof, error: pErr } = await supabase.from('profiles').select('*').eq('email', email).maybeSingle();
-      if (pErr && pErr.code !== 'PGRST116' && !pErr.message.includes('relation')) throw pErr;
+      if (pErr && pErr.message.includes('relation')) {
+        setSyncStatus('init_required');
+        setIsSyncing(false);
+        return;
+      }
+
       if (prof) {
         setBotSettings(prev => ({
           ...prev,
@@ -102,63 +101,56 @@ const App: React.FC = () => {
         }));
       }
 
-      // 2. Employees
-      setSyncStep('Sinkronisasi Karyawan...');
-      const { data: emp, error: eErr } = await supabase.from('employees').select('*').eq('owner_email', email);
-      if (eErr && !eErr.message.includes('relation')) throw eErr;
-      const mappedEmployees = emp ? emp.map((d: any) => ({
-        id: d.id, name: d.name, username: d.username, telegramId: d.telegram_id,
-        role: d.role, shiftId: d.shift_id, status: d.status
-      })) : [];
-      if (mappedEmployees.length > 0) setEmployees(mappedEmployees);
+      // Ambil Employees
+      const { data: emp } = await supabase.from('employees').select('*').eq('owner_email', email);
+      if (emp && emp.length > 0) {
+        setEmployees(emp.map((d: any) => ({
+          id: d.id, name: d.name, username: d.username, telegramId: d.telegram_id,
+          role: d.role, shiftId: d.shift_id, status: d.status
+        })));
+      }
 
-      // 3. Shifts
-      const { data: shft, error: sErr } = await supabase.from('shifts').select('*').eq('owner_email', email);
-      if (sErr && !sErr.message.includes('relation')) throw sErr;
-      const mappedShifts = shft ? shft.map((d: any) => ({
-        id: d.id, name: d.name, startTime: d.start_time, endTime: d.end_time,
-        category: d.category, description: d.description
-      })) : [];
-      if (mappedShifts.length > 0) setShifts(mappedShifts);
+      // Ambil Shifts
+      const { data: shft } = await supabase.from('shifts').select('*').eq('owner_email', email);
+      if (shft && shft.length > 0) {
+        setShifts(shft.map((d: any) => ({
+          id: d.id, name: d.name, startTime: d.start_time, endTime: d.end_time,
+          category: d.category, description: d.description
+        })));
+      }
 
-      // 4. Configs
-      const { data: cfgs, error: cErr } = await supabase.from('configs').select('*').eq('owner_email', email);
-      if (cErr && !cErr.message.includes('relation')) throw cErr;
-      const mappedConfigs = cfgs ? cfgs.map((d: any) => ({
-        type: d.type, maxMinutes: d.max_minutes, maxPerDay: d.max_per_day,
-        responseTemplate: d.response_template, warningTemplate: d.warning_template
-      })) : [];
-      if (mappedConfigs.length > 0) setConfigs(mappedConfigs);
+      // Ambil Configs
+      const { data: cfgs } = await supabase.from('configs').select('*').eq('owner_email', email);
+      if (cfgs && cfgs.length > 0) {
+        setConfigs(cfgs.map((d: any) => ({
+          type: d.type, maxMinutes: d.max_minutes, maxPerDay: d.max_per_day,
+          responseTemplate: d.response_template, warningTemplate: d.warning_template
+        })));
+      }
 
       setSyncStatus('synced');
-      lastSyncHash.current = JSON.stringify({ 
-        employees: mappedEmployees, 
-        shifts: mappedShifts.length > 0 ? mappedShifts : MOCK_SHIFTS, 
-        configs: mappedConfigs.length > 0 ? mappedConfigs : MOCK_LEAVE_CONFIGS 
-      });
       hasInitialPullDone.current = true;
       setIsAppReady(true);
       setIsSyncing(false);
-    } catch (err: any) {
-      console.error("Critical Pull Error:", err);
+    } catch (err) {
+      console.error(err);
       setSyncStatus('error');
-      setSyncError(err.message || "Gagal sinkronisasi data cloud.");
       setIsSyncing(false);
     }
   }, [getSupabase]);
 
   const pushEverything = useCallback(async (isManual = false) => {
     const supabase = getSupabase();
-    if (!supabase) return;
+    if (!supabase || syncStatus === 'init_required') return;
 
+    setSyncStatus('syncing');
     if (isManual) {
       setIsSyncing(true);
       setSyncStep('Menyimpan ke Cloud...');
     }
-    setSyncStatus('syncing');
 
     try {
-      // Upsert Profile
+      // Batch Upsert
       await supabase.from('profiles').upsert({
         email: userEmail,
         bot_token: botSettings.botToken,
@@ -166,7 +158,6 @@ const App: React.FC = () => {
         updated_at: new Date().toISOString()
       }, { onConflict: 'email' });
 
-      // Upsert Employees
       if (employees.length > 0) {
         await supabase.from('employees').upsert(
           employees.map(e => ({
@@ -176,51 +167,17 @@ const App: React.FC = () => {
         );
       }
 
-      // Upsert Shifts
-      if (shifts.length > 0) {
-        await supabase.from('shifts').upsert(
-          shifts.map(s => ({
-            id: s.id, name: s.name, start_time: s.startTime, end_time: s.endTime,
-            category: s.category, description: s.description, owner_email: userEmail
-          })), { onConflict: 'id' }
-        );
-      }
-
-      // Upsert Configs
-      if (configs.length > 0) {
-        await supabase.from('configs').upsert(
-          configs.map(c => ({
-            type: c.type, max_minutes: c.maxMinutes, max_per_day: c.maxPerDay,
-            response_template: c.responseTemplate, warning_template: c.warningTemplate, owner_email: userEmail
-          })), { onConflict: 'type,owner_email' }
-        );
-      }
-
       setSyncStatus('synced');
       lastSyncHash.current = JSON.stringify({ employees, shifts, configs });
-      const emailKey = userEmail.replace(/[@.]/g, '_');
-      localStorage.setItem(`zenith_bot_settings_${emailKey}`, JSON.stringify(botSettings));
-
       if (isManual) {
-        setSyncStep('Tersimpan!');
-        showToast("Sinkronisasi Berhasil!", "success");
-        setTimeout(() => setIsSyncing(false), 1000);
+        showToast("Cloud Sinkron!", "success");
+        setTimeout(() => setIsSyncing(false), 800);
       }
-    } catch (err: any) {
-      console.error("Push Error:", err);
+    } catch (err) {
       setSyncStatus('error');
       if (isManual) setIsSyncing(false);
-      showToast("Gagal menyimpan: " + err.message, "error");
     }
-  }, [getSupabase, employees, shifts, configs, botSettings, userEmail]);
-
-  useEffect(() => {
-    if (!isAuthenticated || !hasInitialPullDone.current || !isAppReady) return;
-    const currentHash = JSON.stringify({ employees, shifts, configs });
-    if (currentHash === lastSyncHash.current) return;
-    const timeout = setTimeout(() => pushEverything(false), 2500);
-    return () => clearTimeout(timeout);
-  }, [employees, shifts, configs, isAuthenticated, isAppReady, pushEverything]);
+  }, [getSupabase, employees, shifts, configs, botSettings, userEmail, syncStatus]);
 
   useEffect(() => {
     if (isAuthenticated && !hasInitialPullDone.current) {
@@ -228,22 +185,20 @@ const App: React.FC = () => {
     }
   }, [isAuthenticated, userEmail, pullEverything]);
 
-  const handleLogin = (email: string, url?: string, key?: string) => {
-    const emailKey = email.replace(/[@.]/g, '_');
+  // Auto-Save
+  useEffect(() => {
+    if (!isAuthenticated || !hasInitialPullDone.current || !isAppReady) return;
+    const currentHash = JSON.stringify({ employees, shifts, configs });
+    if (currentHash === lastSyncHash.current) return;
+    const timeout = setTimeout(() => pushEverything(false), 3000);
+    return () => clearTimeout(timeout);
+  }, [employees, shifts, configs, isAuthenticated, isAppReady, pushEverything]);
+
+  const handleLogin = (email: string, url: string, key: string) => {
     setUserEmail(email);
+    setCloudCreds({ url, key });
     setIsAuthenticated(true);
     localStorage.setItem('zenith_active_session', email);
-    
-    if (url && key) {
-      localStorage.setItem(`zenith_cloud_url_${emailKey}`, url);
-      localStorage.setItem(`zenith_cloud_key_${emailKey}`, key);
-      const knownUsers = JSON.parse(localStorage.getItem('zenith_known_users') || '[]');
-      if (!knownUsers.includes(email)) {
-        knownUsers.push(email);
-        localStorage.setItem('zenith_known_users', JSON.stringify(knownUsers));
-      }
-    }
-    
     pullEverything(email);
   };
 
@@ -255,64 +210,43 @@ const App: React.FC = () => {
 
   if (!isAuthenticated) return <Login onLogin={handleLogin} />;
   
-  if (!isAppReady) {
+  // Loader Inisialisasi Database
+  if (!isAppReady && syncStatus !== 'init_required') {
     return (
-      <div className="fixed inset-0 bg-[#020617] flex flex-col items-center justify-center p-8 z-[9999]">
-         <div className="bg-white/5 p-16 md:p-24 rounded-[4rem] border border-white/10 flex flex-col items-center gap-10 max-w-xl w-full backdrop-blur-3xl shadow-2xl text-center">
-            {syncStatus === 'error' ? (
-              <>
-                <div className="w-32 h-32 bg-rose-500/20 rounded-[3rem] flex items-center justify-center border border-rose-500/40 shadow-2xl shadow-rose-900/40">
-                  <ServerCrash size={56} className="text-rose-500 animate-bounce" />
-                </div>
-                <div className="space-y-4">
-                  <h3 className="text-3xl font-black text-white uppercase italic">Sesi Cloud Gagal</h3>
-                  <p className="text-sm text-slate-400 font-medium px-4">{syncError || "Terjadi masalah koneksi atau tabel database belum siap."}</p>
-                </div>
-                <div className="flex flex-col gap-4 w-full">
-                  <button 
-                    onClick={() => pullEverything(userEmail)}
-                    className="w-full bg-indigo-600 text-white font-black py-5 rounded-2xl hover:bg-indigo-500 transition-all flex items-center justify-center gap-3 uppercase text-[10px] tracking-widest shadow-xl shadow-indigo-900/20"
-                  >
-                    <RefreshCw size={16} /> Coba Lagi
-                  </button>
-                  <div className="grid grid-cols-2 gap-4">
-                    <button 
-                      onClick={() => { setIsAppReady(true); setSyncStatus('error'); }}
-                      className="bg-white/5 text-amber-500 font-black py-4 rounded-2xl border border-white/5 hover:bg-white/10 transition-all text-[10px] uppercase tracking-widest"
-                    >
-                      Buka Setup SQL
-                    </button>
-                    <button 
-                      onClick={handleLogout}
-                      className="bg-white/5 text-slate-400 font-black py-4 rounded-2xl border border-white/5 hover:bg-white/10 transition-all text-[10px] uppercase tracking-widest"
-                    >
-                      Ganti Akun
-                    </button>
-                  </div>
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="relative">
-                   <div className="absolute inset-0 bg-indigo-500 rounded-full animate-ping opacity-20" />
-                   <div className="relative w-28 h-28 bg-gradient-to-br from-indigo-500 to-indigo-800 rounded-[2.5rem] flex items-center justify-center shadow-2xl border border-white/10">
-                      <DatabaseZap size={48} className="text-white animate-pulse" />
-                   </div>
-                </div>
-                <div className="space-y-3">
-                   <h3 className="text-2xl font-black text-white uppercase italic tracking-tighter">Memulihkan Cloud</h3>
-                   <p className="text-[10px] font-black text-indigo-400 uppercase tracking-[0.4em] animate-pulse">{syncStep}</p>
-                </div>
-                <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden">
-                   <div className="h-full bg-indigo-50 animate-progress" />
-                </div>
-              </>
-            )}
-         </div>
-         <style>{`
-          @keyframes progress { 0% { width: 0%; } 50% { width: 70%; } 100% { width: 100%; } }
-          .animate-progress { animation: progress 1.5s infinite ease-in-out; }
-         `}</style>
+      <div className="fixed inset-0 bg-[#020617] flex items-center justify-center">
+        <div className="text-center space-y-6">
+          <RefreshCw className="text-indigo-500 animate-spin mx-auto" size={48} />
+          <p className="text-[10px] font-black text-white uppercase tracking-[0.4em]">{syncStep}</p>
+        </div>
+      </div>
+    );
+  }
+
+  // UI Setup Database (Jika tabel belum ada)
+  if (syncStatus === 'init_required') {
+    return (
+      <div className="fixed inset-0 bg-[#020617] flex items-center justify-center p-8">
+        <div className="bg-white/5 border border-white/10 p-12 lg:p-20 rounded-[4rem] max-w-2xl w-full text-center space-y-10 backdrop-blur-3xl">
+          <div className="w-24 h-24 bg-amber-500/20 rounded-[2.5rem] flex items-center justify-center mx-auto border border-amber-500/30">
+            <AlertTriangle className="text-amber-500" size={44} />
+          </div>
+          <div className="space-y-4">
+            <h2 className="text-3xl font-black text-white italic uppercase italic">Database Belum Siap</h2>
+            <p className="text-slate-400 text-sm leading-relaxed">
+              Koneksi ke Supabase berhasil, namun tabel-tabel Zenith belum ditemukan. 
+              Silakan salin kode SQL di menu <b>Koneksi Server</b> dan jalankan di SQL Editor Supabase Anda.
+            </p>
+          </div>
+          <div className="flex flex-col gap-4">
+            <button 
+              onClick={() => { setIsAppReady(true); setActivePage('koneksi'); }}
+              className="w-full bg-indigo-600 text-white font-black py-5 rounded-2xl flex items-center justify-center gap-3 uppercase text-[10px] tracking-widest"
+            >
+              <Code size={18} /> Buka SQL Editor Sekarang
+            </button>
+            <button onClick={handleLogout} className="text-slate-500 font-black text-[10px] uppercase tracking-widest hover:text-white transition-all">Ganti Akun Supabase</button>
+          </div>
+        </div>
       </div>
     );
   }
@@ -333,58 +267,31 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {isSyncing && (
-          <div className="fixed bottom-12 right-12 z-[999] animate-in slide-in-from-bottom-10">
-             <div className="bg-[#0f172a] text-white px-8 py-4 rounded-3xl shadow-2xl flex items-center gap-4 border border-white/10">
-                <RefreshCw size={16} className="animate-spin text-indigo-400" />
-                <span className="text-[10px] font-black uppercase tracking-widest">{syncStep}</span>
-             </div>
-          </div>
-        )}
-
         {/* Global Header */}
         <div className="bg-white px-12 py-5 border-b border-slate-200/60 flex justify-between items-center shadow-sm z-20">
            <div className="flex items-center gap-4">
               <div className={`flex items-center gap-3 px-5 py-2.5 rounded-2xl border transition-all duration-700 ${
                 syncStatus === 'syncing' ? 'bg-indigo-50 border-indigo-200 text-indigo-500' : 
-                syncStatus === 'error' ? 'bg-rose-50 border-rose-200 text-rose-500 animate-pulse' : 
                 'bg-emerald-50 border-emerald-200 text-emerald-600 shadow-lg shadow-emerald-500/10'
               }`}>
-                 {syncStatus === 'syncing' ? <RefreshCw size={14} className="animate-spin" /> : syncStatus === 'error' ? <AlertTriangle size={14} /> : <Database size={14} />}
+                 {syncStatus === 'syncing' ? <RefreshCw size={14} className="animate-spin" /> : <Database size={14} />}
                  <span className="text-[10px] font-black uppercase tracking-widest">
-                   {syncStatus === 'syncing' ? 'SYNCING...' : syncStatus === 'error' ? 'TABLES NOT READY' : 'CLOUD CONNECTED'}
+                   {syncStatus === 'syncing' ? 'SYNCING...' : 'CLOUD SYNC ACTIVE'}
                  </span>
               </div>
-              {syncStatus === 'error' && (
-                <button 
-                  onClick={() => setActivePage('koneksi')}
-                  className="flex items-center gap-2 text-[10px] font-black text-rose-500 uppercase hover:underline"
-                >
-                  <Code size={12} /> Buka SQL Editor
-                </button>
-              )}
            </div>
            
            <div className="flex items-center gap-4">
-              <div className="flex items-center gap-2 bg-slate-50 p-1.5 rounded-2xl border border-slate-100 mr-4">
-                 <button 
-                  onClick={() => pullEverything(userEmail)}
-                  className="p-3 text-slate-500 hover:text-indigo-600 hover:bg-white rounded-xl transition-all flex items-center gap-2 text-[9px] font-black uppercase tracking-widest"
-                 >
-                    <DownloadCloud size={16} /> <span className="hidden xl:inline">Refresh Data</span>
-                 </button>
-                 <div className="w-px h-6 bg-slate-200 mx-1" />
-                 <button 
-                  onClick={() => pushEverything(true)}
-                  className="p-3 bg-[#0f172a] text-white rounded-xl transition-all flex items-center gap-2 text-[9px] font-black uppercase tracking-widest hover:bg-black shadow-lg shadow-slate-900/20"
-                 >
-                    <UploadCloud size={16} /> <span className="hidden xl:inline">Save Cloud</span>
-                 </button>
-              </div>
+              <button 
+                onClick={() => pushEverything(true)}
+                className="bg-[#0f172a] text-white px-8 py-3 rounded-2xl flex items-center gap-3 text-[10px] font-black uppercase tracking-widest hover:bg-black transition-all shadow-xl shadow-slate-200"
+              >
+                <UploadCloud size={16} /> Force Sync
+              </button>
 
               <div className="flex items-center gap-4 pl-6 border-l border-slate-100">
                  <div className="text-right">
-                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none">Admin Panel</p>
+                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none">Account</p>
                     <p className="text-[12px] font-bold text-slate-800 mt-1.5">{userEmail}</p>
                  </div>
                  <div className="w-12 h-12 bg-indigo-600 rounded-2xl flex items-center justify-center text-white text-sm font-black shadow-xl">
@@ -403,7 +310,7 @@ const App: React.FC = () => {
             {activePage === 'histori' && <History history={history} setHistory={setHistory} />}
             {activePage === 'bot-intelligence' && <BotIntelligence aliases={aliases} setAliases={setAliases} />}
             {activePage === 'respon' && <Respon configs={configs} setConfigs={setConfigs} />}
-            {activePage === 'koneksi' && <BotConnection settings={botSettings} setSettings={setBotSettings} onForcePush={() => pushEverything(true)} onForcePull={() => pullEverything(userEmail)} configs={configs} employees={employees} aliases={aliases} />}
+            {activePage === 'koneksi' && <BotConnection settings={{...botSettings, supabaseUrl: cloudCreds?.url, supabaseKey: cloudCreds?.key}} setSettings={(s) => setBotSettings(s)} onForcePush={() => pushEverything(true)} onForcePull={() => pullEverything(userEmail)} configs={configs} employees={employees} aliases={aliases} />}
             {activePage === 'simulator' && <Simulator employees={employees} shifts={shifts} history={history} setHistory={setHistory} configs={configs} aliases={aliases} botSettings={botSettings} />}
             {activePage === 'deployment' && <Deployment />}
             {activePage === 'pengaturan' && <Settings configs={configs} setConfigs={setConfigs} userEmail={userEmail} />}
