@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useEffect } from 'react';
 import { Bot, User, Trash2, ShieldCheck, Loader2, Wifi, WifiOff, Send, MessageSquare, Zap } from 'lucide-react';
 import { Message, Employee, Shift, LeaveHistory, LeaveConfig, BotAlias, BotSettings } from '../types';
@@ -7,82 +8,45 @@ interface SimulatorProps {
   employees: Employee[];
   shifts: Shift[];
   history: LeaveHistory[];
-  setHistory: React.Dispatch<React.SetStateAction<LeaveHistory[]>>;
+  setHistory: React.Dispatch<LeaveHistory[]>;
   configs: LeaveConfig[];
   aliases: BotAlias[];
   botSettings: BotSettings;
+  messages: Message[];
+  setMessages: React.Dispatch<React.SetStateAction<Message[]>>;
+  isBridgeActive: boolean;
+  setIsBridgeActive: (active: boolean) => void;
 }
 
-const Simulator: React.FC<SimulatorProps> = ({ employees, shifts, history, setHistory, configs, aliases, botSettings }) => {
-  const [messages, setMessages] = useState<Message[]>([
-    { id: '1', sender: 'bot', text: 'Halo! Saya Zenith Bot. Gunakan toggle di kanan untuk menghubungkan ke Telegram Asli!', timestamp: new Date() }
-  ]);
+const Simulator: React.FC<SimulatorProps> = ({ 
+  employees, shifts, history, setHistory, configs, aliases, 
+  botSettings, messages, setMessages, isBridgeActive, setIsBridgeActive 
+}) => {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [isBridgeActive, setIsBridgeActive] = useState(false);
   const [senderUser, setSenderUser] = useState(employees[0]?.username || "@user");
   const scrollRef = useRef<HTMLDivElement>(null);
-  const lastUpdateId = useRef(0);
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages]);
-
-  // LIVE TELEGRAM BRIDGE ENGINE
-  useEffect(() => {
-    let interval: any;
-    if (isBridgeActive && botSettings.botToken) {
-      interval = setInterval(async () => {
-        try {
-          const res = await fetch(`https://api.telegram.org/bot${botSettings.botToken}/getUpdates?offset=${lastUpdateId.current + 1}&timeout=10`);
-          const data = await res.json();
-          if (data.ok && data.result.length > 0) {
-            for (const update of data.result) {
-              lastUpdateId.current = update.update_id;
-              if (update.message && update.message.text) {
-                const chatId = update.message.chat.id;
-                const userText = update.message.text;
-                const username = update.message.from.username ? `@${update.message.from.username}` : "Anonymous";
-                
-                // Tampilkan di Simulator UI
-                setMessages(prev => [...prev, { id: `tg-${update.update_id}`, sender: 'user', text: `[TG: ${username}] ${userText}`, timestamp: new Date() }]);
-                
-                // Proses lewat AI
-                let aiReply = "";
-                await processBotLogicStream(userText, { employees, shifts, history, configs, aliases }, (chunk) => { aiReply += chunk; }, username);
-                
-                // Kirim balik ke Telegram
-                await fetch(`https://api.telegram.org/bot${botSettings.botToken}/sendMessage`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ chat_id: chatId, text: aiReply })
-                });
-
-                setMessages(prev => [...prev, { id: `ai-${update.update_id}`, sender: 'bot', text: aiReply, timestamp: new Date() }]);
-              }
-            }
-          }
-        } catch (e) {
-          console.error("Bridge Error:", e);
-        }
-      }, 3000);
-    }
-    return () => clearInterval(interval);
-  }, [isBridgeActive, botSettings.botToken, employees, shifts, history, configs, aliases]);
 
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
     const userMsg: Message = { id: Date.now().toString(), sender: 'user', text: input, timestamp: new Date() };
     const botId = (Date.now() + 1).toString();
     const placeholderBotMsg: Message = { id: botId, sender: 'bot', text: '', timestamp: new Date() };
+    
     setMessages(prev => [...prev, userMsg, placeholderBotMsg]);
     setInput('');
     setIsLoading(true);
+    
     let fullBotText = "";
     await processBotLogicStream(input, { employees, shifts, history, configs, aliases }, (chunk) => {
         fullBotText += chunk;
         setMessages(prev => prev.map(m => m.id === botId ? { ...m, text: fullBotText } : m));
     }, senderUser);
+    
     setIsLoading(false);
   };
 
@@ -172,16 +136,18 @@ const Simulator: React.FC<SimulatorProps> = ({ employees, shifts, history, setHi
                  <h3 className="text-lg font-black italic uppercase">Mode Bridge</h3>
               </div>
               <p className="text-[10px] text-slate-400 leading-relaxed font-bold uppercase tracking-widest">
-                Jika "Live Telegram Bridge" aktif, bot Zenith akan merespon pesan di Telegram asli. Admin Panel ini bertindak sebagai server.
+                Status: {isBridgeActive ? 'ONLINE (Sistem memproses Telegram)' : 'OFFLINE (Hanya simulasi lokal)'}
               </p>
               <div className="space-y-4">
                  <div className="flex justify-between items-center bg-white/5 p-4 rounded-2xl border border-white/5">
                     <span className="text-[10px] font-black uppercase tracking-widest">Status Engine</span>
-                    <span className="text-[10px] font-black text-emerald-400 uppercase">Flash-Lite Active</span>
+                    <span className={`text-[10px] font-black uppercase ${isBridgeActive ? 'text-emerald-400' : 'text-slate-500'}`}>
+                      {isBridgeActive ? 'STREAMING ACTIVE' : 'ENGINE STANDBY'}
+                    </span>
                  </div>
                  <div className="p-4 bg-indigo-500/10 rounded-2xl border border-indigo-500/20">
                     <p className="text-[9px] text-indigo-300 font-bold italic leading-relaxed">
-                      "Tab ini harus tetap terbuka agar bot tetap aktif di Telegram."
+                      "Sekarang Anda bebas berpindah menu. Selama tab browser ini terbuka, bot akan tetap membalas pesan di Telegram asli."
                     </p>
                  </div>
               </div>
